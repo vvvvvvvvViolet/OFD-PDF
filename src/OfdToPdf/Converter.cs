@@ -13,6 +13,8 @@ namespace OfdToPdf
         public string Error { get; set; }
         /// <summary>Fonts the OFD needs that are neither embedded nor installed (text may look wrong).</summary>
         public List<string> MissingFonts { get; set; } = new List<string>();
+        /// <summary>Missing fonts that were automatically replaced: original -> replacement.</summary>
+        public Dictionary<string, string> SubstitutedFonts { get; set; } = new Dictionary<string, string>();
     }
 
     public static class Converter
@@ -24,7 +26,7 @@ namespace OfdToPdf
             try
             {
                 if (Directory.Exists(FontCheck.CustomFontDir))
-                    PdfDocument.SetCustomFontsFolders(FontCheck.CustomFontDir);
+                    PdfDocument.LoadCustomFontFolder(FontCheck.CustomFontDir);
             }
             catch (Exception)
             {
@@ -59,23 +61,59 @@ namespace OfdToPdf
 
                 Directory.CreateDirectory(Path.GetDirectoryName(output));
 
-                var missing = FontCheck.FindMissingFonts(input);
-
-                var converter = new OfdConverter(input);
+                var plan = FontCheck.Analyze(input);
+                string temp = null;
                 try
                 {
-                    converter.ToPdf(output);
+                    if (plan.Substitutions.Count > 0)
+                    {
+                        temp = FontCheck.WriteSubstitutedCopy(input, plan.Substitutions);
+                        try
+                        {
+                            ToPdf(temp, output);
+                        }
+                        catch (Exception)
+                        {
+                            // The patched copy should never be worse, but fall back to the original.
+                            plan.Unresolved.AddRange(plan.Substitutions.Keys);
+                            plan.Substitutions.Clear();
+                            ToPdf(input, output);
+                        }
+                    }
+                    else
+                    {
+                        ToPdf(input, output);
+                    }
                 }
                 finally
                 {
-                    converter.Dispose();
+                    if (temp != null) try { File.Delete(temp); } catch (Exception) { }
                 }
 
-                return new ConvertOutcome { Success = true, OutputPath = output, MissingFonts = missing };
+                return new ConvertOutcome
+                {
+                    Success = true,
+                    OutputPath = output,
+                    MissingFonts = plan.Unresolved,
+                    SubstitutedFonts = plan.Substitutions,
+                };
             }
             catch (Exception ex)
             {
                 return Fail(ex.Message);
+            }
+        }
+
+        private static void ToPdf(string input, string output)
+        {
+            var converter = new OfdConverter(input);
+            try
+            {
+                converter.ToPdf(output);
+            }
+            finally
+            {
+                converter.Dispose();
             }
         }
 

@@ -47,6 +47,8 @@ namespace OfdToPdf
                 if (r.Success)
                 {
                     Console.WriteLine("[OK]     " + f + " -> " + r.OutputPath);
+                    foreach (var kv in r.SubstitutedFonts)
+                        Console.WriteLine("         font substituted: " + kv.Key + " -> " + kv.Value);
                     if (r.MissingFonts.Count > 0)
                         Console.WriteLine("         warning: fonts not installed (text may be garbled): " + string.Join(", ", r.MissingFonts));
                 }

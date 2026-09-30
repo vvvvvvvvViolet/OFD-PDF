@@ -38,10 +38,29 @@ jobs:
           if (-not (Test-Path dist/OfdToPdf/OfdToPdf.exe)) { throw "exe missing" }
           Compress-Archive -Path dist/OfdToPdf -DestinationPath OfdToPdf-windows.zip
 
+      - name: Smoke test (missing Chinese fonts must not render as boxes)
+        shell: pwsh
+        run: |
+          Get-ChildItem C:/Windows/Fonts | Where-Object Name -match 'simhei|msyh|simsun|simkai|simfang|deng' | Format-Table Name
+          python -m pip install --quiet pymupdf
+          python tests/make_sample_ofd.py sample.ofd
+          $p = Start-Process dist/OfdToPdf/OfdToPdf.exe -ArgumentList 'sample.ofd','--overwrite' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "converter exited with $($p.ExitCode)" }
+          python tests/check_pdf.py sample.pdf
+
       - uses: actions/upload-artifact@v4
         with:
           name: OfdToPdf-windows
           path: dist/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test
+          path: |
+            sample.pdf
+            sample.pdf.png
+          if-no-files-found: ignore
 
       - name: Publish release asset
         if: startsWith(github.ref, 'refs/tags/v')

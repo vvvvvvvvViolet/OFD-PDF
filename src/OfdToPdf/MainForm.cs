@@ -240,6 +240,8 @@ namespace OfdToPdf
                 {
                     ok++;
                     string detail = Path.GetFileName(r.OutputPath);
+                    if (r.SubstitutedFonts.Count > 0)
+                        detail += "  (แทนฟอนต์ " + string.Join(", ", r.SubstitutedFonts.Select(kv => kv.Key + "→" + kv.Value)) + ")";
                     if (r.MissingFonts.Count > 0)
                     {
                         detail += "  ⚠ ไม่มีฟอนต์: " + string.Join(", ", r.MissingFonts);
