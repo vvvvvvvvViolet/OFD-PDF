@@ -50,12 +50,29 @@ namespace OfdToPdf
 
         private void BuildUi()
         {
-            var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44, Padding = new Padding(8, 8, 8, 0) };
+            // Toolbar: file actions on the left, the main "Convert" action always visible here.
+            var top = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                WrapContents = true,
+                Padding = new Padding(8, 8, 8, 4),
+            };
             Setup(btnAdd, "เพิ่มไฟล์…", (s, e) => AddFilesDialog());
             Setup(btnAddFolder, "เพิ่มโฟลเดอร์…", (s, e) => AddFolderDialog());
             Setup(btnRemove, "ลบที่เลือก", (s, e) => RemoveSelected());
             Setup(btnClear, "ล้างทั้งหมด", (s, e) => { known.Clear(); list.Items.Clear(); UpdateUi(); });
-            top.Controls.AddRange(new Control[] { btnAdd, btnAddFolder, btnRemove, btnClear });
+            Setup(btnConvert, "▶ แปลงเป็น PDF", (s, e) => { if (busy) cts.Cancel(); else StartConvert(); });
+            btnConvert.Font = new Font(Font, FontStyle.Bold);
+            btnConvert.BackColor = Color.FromArgb(0, 120, 215);
+            btnConvert.ForeColor = Color.White;
+            btnConvert.FlatStyle = FlatStyle.Flat;
+            btnConvert.Padding = new Padding(10, 2, 10, 2);
+            btnConvert.Margin = new Padding(16, 3, 3, 3);
+            Setup(btnOpen, "เปิดโฟลเดอร์ผลลัพธ์", (s, e) => OpenOutput());
+            btnOpen.Visible = false;
+            top.Controls.AddRange(new Control[] { btnAdd, btnAddFolder, btnRemove, btnClear, btnConvert, btnOpen });
 
             list.Dock = DockStyle.Fill;
             list.View = View.Details;
@@ -69,48 +86,45 @@ namespace OfdToPdf
             list.DragDrop += OnDragDrop;
             list.KeyDown += (s, e) => { if (e.KeyCode == Keys.Delete) RemoveSelected(); };
 
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 150, Padding = new Padding(8) };
+            // Options + progress. TableLayoutPanel sizes itself, so nothing gets pushed off-screen.
+            var bottom = new TableLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2,
+                Padding = new Padding(8, 4, 8, 8),
+            };
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             chkSame.Text = "บันทึก PDF ไว้โฟลเดอร์เดียวกับไฟล์ต้นฉบับ";
             chkSame.Checked = true;
             chkSame.AutoSize = true;
-            chkSame.Location = new Point(8, 8);
             chkSame.CheckedChanged += (s, e) => UpdateUi(keepStatus: true);
 
-            txtOut.Location = new Point(8, 34);
-            txtOut.Width = 560;
-            txtOut.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-            btnBrowse.Text = "เลือกโฟลเดอร์…";
-            btnBrowse.Width = 120;
-            btnBrowse.Location = new Point(576, 32);
-            btnBrowse.Anchor = AnchorStyles.Right | AnchorStyles.Top;
-            btnBrowse.Click += (s, e) => BrowseOutput();
+            txtOut.Dock = DockStyle.Fill;
+            Setup(btnBrowse, "เลือกโฟลเดอร์…", (s, e) => BrowseOutput());
 
             chkOverwrite.Text = "เขียนทับไฟล์ PDF เดิม (ถ้าไม่ติ๊ก จะสร้างชื่อใหม่ เช่น file (1).pdf)";
             chkOverwrite.AutoSize = true;
-            chkOverwrite.Location = new Point(8, 62);
 
-            progress.Location = new Point(8, 92);
-            progress.Size = new Size(560, 24);
-            progress.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-
-            btnConvert.Text = "แปลงเป็น PDF";
-            btnConvert.Font = new Font(Font, FontStyle.Bold);
-            btnConvert.Size = new Size(120, 28);
-            btnConvert.Location = new Point(576, 90);
-            btnConvert.Anchor = AnchorStyles.Right | AnchorStyles.Top;
-            btnConvert.Click += (s, e) => { if (busy) cts.Cancel(); else StartConvert(); };
-
-            btnOpen.Text = "เปิดโฟลเดอร์ผลลัพธ์";
-            btnOpen.AutoSize = true;
-            btnOpen.Location = new Point(8, 120);
-            btnOpen.Visible = false;
-            btnOpen.Click += (s, e) => OpenOutput();
+            progress.Dock = DockStyle.Fill;
+            progress.Height = 22;
 
             status.AutoSize = true;
-            status.Location = new Point(160, 125);
+            status.Anchor = AnchorStyles.Left;
 
-            bottom.Controls.AddRange(new Control[] { chkSame, txtOut, btnBrowse, chkOverwrite, progress, btnConvert, btnOpen, status });
+            bottom.Controls.Add(chkSame, 0, 0);
+            bottom.SetColumnSpan(chkSame, 2);
+            bottom.Controls.Add(txtOut, 0, 1);
+            bottom.Controls.Add(btnBrowse, 1, 1);
+            bottom.Controls.Add(chkOverwrite, 0, 2);
+            bottom.SetColumnSpan(chkOverwrite, 2);
+            bottom.Controls.Add(progress, 0, 3);
+            bottom.SetColumnSpan(progress, 2);
+            bottom.Controls.Add(status, 0, 4);
+            bottom.SetColumnSpan(status, 2);
 
             // Add Fill first so docked Top/Bottom panels claim their space correctly.
             Controls.Add(list);
@@ -268,9 +282,9 @@ namespace OfdToPdf
             txtOut.Enabled = btnBrowse.Enabled = !chkSame.Checked && !busy;
             btnAdd.Enabled = btnAddFolder.Enabled = btnRemove.Enabled = btnClear.Enabled = !busy;
             chkSame.Enabled = chkOverwrite.Enabled = !busy;
-            btnConvert.Text = busy ? "ยกเลิก" : "แปลงเป็น PDF";
+            btnConvert.Text = busy ? "■ ยกเลิก" : "▶ แปลงเป็น PDF";
             btnConvert.Enabled = busy || list.Items.Count > 0;
-            if (!keepStatus) status.Text = list.Items.Count + " ไฟล์ในรายการ (ลากไฟล์ .ofd มาวางได้)";
+            if (!keepStatus) status.Text = list.Items.Count + " ไฟล์ในรายการ — ลากไฟล์ .ofd มาวาง แล้วกด \"▶ แปลงเป็น PDF\" ด้านบน";
         }
     }
 }
