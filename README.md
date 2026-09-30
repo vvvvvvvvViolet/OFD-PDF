@@ -1,7 +1,7 @@
 # OFD → PDF Converter
 
 โปรแกรม Windows (`OfdToPdf.exe` ไฟล์เดียว) สำหรับแปลงไฟล์ OFD เป็น PDF
-ออกแบบโดยอ้างอิงโปรเจกต์ [taurusxin/Ofd2Pdf](https://github.com/taurusxin/Ofd2Pdf) (MIT) — ใช้ engine เดียวกัน (`OfdConverter` จาก Free Spire.PDF รุ่นฟรี ไม่มี watermark)
+
 
 ## ความสามารถ
 - GUI: เพิ่มไฟล์ / เพิ่มทั้งโฟลเดอร์ (รวมโฟลเดอร์ย่อย) / ลากวาง / ลบรายการ
