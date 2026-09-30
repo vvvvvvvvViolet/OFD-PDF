@@ -1,7 +1,7 @@
 # OFD → PDF Converter
 
 โปรแกรม Windows (`OfdToPdf.exe` ไฟล์เดียว) สำหรับแปลงไฟล์ OFD เป็น PDF
-ออกแบบโดยอ้างอิงโปรเจกต์ [taurusxin/Ofd2Pdf](https://github.com/taurusxin/Ofd2Pdf) (MIT) — ใช้ engine เดียวกัน (Spire.PDF `OfdConverter`)
+ออกแบบโดยอ้างอิงโปรเจกต์ [taurusxin/Ofd2Pdf](https://github.com/taurusxin/Ofd2Pdf) (MIT) — ใช้ engine เดียวกัน (`OfdConverter` จาก Free Spire.PDF รุ่นฟรี ไม่มี watermark)
 
 ## ความสามารถ
 - GUI: เพิ่มไฟล์ / เพิ่มทั้งโฟลเดอร์ (รวมโฟลเดอร์ย่อย) / ลากวาง / ลบรายการ
@@ -21,7 +21,7 @@ exit code `0` = สำเร็จทั้งหมด, `1` = มีไฟล�
    ```
    dotnet build src/OfdToPdf/OfdToPdf.csproj -c Release -o out
    ```
-   ได้ `out\OfdToPdf.exe` (Spire.PDF ถูกฝังในตัว exe ด้วย Costura.Fody; ต้องมี `HarfBuzzSharp.dll` และโฟลเดอร์ `x64`/`x86` อยู่ข้าง exe) — ต้องมี .NET Framework 4.8 (มีใน Windows 10/11 อยู่แล้ว)
+   ได้ `out\OfdToPdf.exe` ไฟล์เดียว (Free Spire.PDF ถูกฝังในตัว exe ด้วย Costura.Fody) — ต้องมี .NET Framework 4.8 (มีใน Windows 10/11 อยู่แล้ว)
 
 ## ตัวอักษรเพี้ยน / รองรับหลายภาษา
 ตัวอักษรใน PDF เพี้ยนหรือเป็นกล่องสี่เหลี่ยม มักเกิดจากไฟล์ OFD ใช้ฟอนต์ที่ไม่ได้ฝังมาในไฟล์
@@ -32,6 +32,6 @@ exit code `0` = สำเร็จทั้งหมด, `1` = มีไฟล�
 2. คัดลอกไฟล์ฟอนต์ (.ttf/.ttc/.otf) ไปไว้ในโฟลเดอร์ `fonts` ข้างไฟล์ exe แล้วเปิดโปรแกรมใหม่
 
 ## ข้อจำกัดสำคัญ
-Spire.PDF รุ่นฟรีจำกัดจำนวนหน้า (ประมาณ 10 หน้า) และใส่ watermark ทดลองใช้ — เหมือนโปรเจกต์ต้นแบบ
-ถ้าใช้งานจริงกับเอกสารยาว ต้องซื้อ license ของ Spire.PDF หรือเปลี่ยน engine ใน `src/OfdToPdf/Converter.cs`
+ใช้ Free Spire.PDF (รุ่นฟรีอย่างเป็นทางการของ e-iceblue): **ไม่มี watermark** แต่จำกัด **ไม่เกิน 10 หน้าต่อไฟล์**
+ถ้าต้องแปลงเอกสารยาวกว่านั้น ต้องซื้อ license ของ Spire.PDF หรือเปลี่ยน engine ใน `src/OfdToPdf/Converter.cs`
 (ที่เดียวที่เรียก engine)

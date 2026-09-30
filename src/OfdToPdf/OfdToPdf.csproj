@@ -13,8 +13,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Same engine as the reference project (taurusxin/Ofd2Pdf), newer release with better OFD text/font handling. -->
-    <PackageReference Include="Spire.PDF" Version="12.9.18" />
+    <!-- Same engine as the reference project (taurusxin/Ofd2Pdf), free community edition:
+         no evaluation watermark, but documents are limited to 10 pages. -->
+    <PackageReference Include="FreeSpire.PDF" Version="12.4.0" />
     <!-- Embeds Spire.Pdf.dll into the exe so a single file is distributed. -->
     <PackageReference Include="Costura.Fody" Version="5.7.0" PrivateAssets="all" />
     <PackageReference Include="Fody" Version="6.8.0" PrivateAssets="all" />

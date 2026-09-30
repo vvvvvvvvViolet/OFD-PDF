@@ -29,5 +29,10 @@ for want in EXPECTED:
     print(f"{status}: {want!r} font={font!r} missing_glyphs={missing}")
     failed |= bool(missing)
 
+all_text = "".join(p.get_text() for p in doc)
+if "Evaluation Warning" in all_text:
+    print("FAIL: PDF contains the Spire evaluation watermark")
+    failed = True
+
 page.get_pixmap(dpi=80).save(sys.argv[1] + ".png")
 sys.exit(1 if failed else 0)

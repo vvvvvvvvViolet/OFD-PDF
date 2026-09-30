@@ -1,4 +1,3 @@
 <Weavers>
-  <!-- HarfBuzzSharp stays a loose file: it locates its native libHarfBuzzSharp.dll relative to itself. -->
-  <Costura ExcludeAssemblies="HarfBuzzSharp" />
+  <Costura />
 </Weavers>

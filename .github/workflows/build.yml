@@ -26,12 +26,9 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          # Managed dlls are embedded in the exe (Costura); native HarfBuzz and the
-          # fonts folder must sit next to it.
+          # Managed dlls are embedded in the exe (Costura); the optional fonts folder sits next to it.
           New-Item -ItemType Directory -Force dist/OfdToPdf/fonts | Out-Null
           Copy-Item out/OfdToPdf.exe, out/OfdToPdf.exe.config dist/OfdToPdf/
-          foreach ($d in 'x64','x86','arm64') { if (Test-Path out/$d) { Copy-Item -Recurse out/$d dist/OfdToPdf/ } }
-          Get-ChildItem out -Filter *.dll | Where-Object { $_.Name -like '*HarfBuzz*' } | Copy-Item -Destination dist/OfdToPdf/
           Set-Content dist/OfdToPdf/fonts/README.txt "Put extra .ttf/.ttc/.otf fonts here (e.g. KaiTi, FangSong) if converted text looks garbled."
           Get-ChildItem -Recurse out | Format-Table FullName, Length
           Get-ChildItem -Recurse dist | Format-Table FullName, Length
