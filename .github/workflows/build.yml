@@ -40,6 +40,8 @@ jobs:
 
       - name: Smoke test (missing Chinese fonts must not render as boxes)
         shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           Get-ChildItem C:/Windows/Fonts | Where-Object Name -match 'simhei|msyh|simsun|simkai|simfang|deng' | Format-Table Name
           python -m pip install --quiet pymupdf
