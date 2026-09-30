@@ -229,13 +229,24 @@ namespace OfdToPdf
             UpdateUi();
 
             int ok = 0, fail = 0;
+            var missingFonts = new SortedSet<string>();
             foreach (var it in todo)
             {
                 if (token.IsCancellationRequested) break;
                 SetState(it, State.Converting, null);
                 string path = (string)it.Tag;
                 var r = await Task.Run(() => Converter.Convert(path, outDir, overwrite));
-                if (r.Success) { ok++; SetState(it, State.Done, Path.GetFileName(r.OutputPath)); }
+                if (r.Success)
+                {
+                    ok++;
+                    string detail = Path.GetFileName(r.OutputPath);
+                    if (r.MissingFonts.Count > 0)
+                    {
+                        detail += "  ⚠ ไม่มีฟอนต์: " + string.Join(", ", r.MissingFonts);
+                        foreach (string font in r.MissingFonts) missingFonts.Add(font);
+                    }
+                    SetState(it, State.Done, detail);
+                }
                 else { fail++; SetState(it, State.Failed, r.Error); }
                 progress.Value++;
             }
@@ -249,6 +260,27 @@ namespace OfdToPdf
                 token.IsCancellationRequested ? " (ยกเลิกกลางคัน)" : "");
             btnOpen.Visible = ok > 0;
             UpdateUi(keepStatus: true);
+
+            if (missingFonts.Count > 0) ShowMissingFontsHelp(missingFonts);
+        }
+
+        private void ShowMissingFontsHelp(IEnumerable<string> fonts)
+        {
+            string msg =
+                "ไฟล์ OFD ใช้ฟอนต์ที่ไม่ได้ฝังมาในไฟล์ และเครื่องนี้ไม่มีฟอนต์เหล่านี้:\n\n    " +
+                string.Join(", ", fonts) +
+                "\n\nตัวอักษรใน PDF อาจเพี้ยนหรือเป็นกล่องสี่เหลี่ยม วิธีแก้ (เลือกอย่างใดอย่างหนึ่ง):\n\n" +
+                "1) ติดตั้งฟอนต์จีนของ Windows:\n" +
+                "    Settings → Apps → Optional features → Add a feature →\n" +
+                "    \"Chinese (Simplified) Supplemental Fonts\" (มี 楷体 KaiTi, 仿宋 FangSong ฯลฯ)\n\n" +
+                "2) คัดลอกไฟล์ฟอนต์ (.ttf/.ttc/.otf) ไปไว้ในโฟลเดอร์:\n    " + FontCheck.CustomFontDir +
+                "\n\nจากนั้นปิดโปรแกรมแล้วเปิดใหม่ และแปลงไฟล์อีกครั้ง (ติ๊ก \"เขียนทับ\" เพื่อแทนที่ PDF เดิม)\n\n" +
+                "ต้องการเปิดโฟลเดอร์ fonts เลยไหม?";
+            if (MessageBox.Show(this, msg, "ฟอนต์ไม่ครบ", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                Directory.CreateDirectory(FontCheck.CustomFontDir);
+                Process.Start("explorer.exe", "\"" + FontCheck.CustomFontDir + "\"");
+            }
         }
 
         private void OpenOutput()

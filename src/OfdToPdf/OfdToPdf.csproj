@@ -13,11 +13,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Same conversion engine as the reference project (taurusxin/Ofd2Pdf). -->
-    <PackageReference Include="Spire.PDF" Version="8.7.9" />
+    <!-- Same engine as the reference project (taurusxin/Ofd2Pdf), newer release with better OFD text/font handling. -->
+    <PackageReference Include="Spire.PDF" Version="12.9.18" />
     <!-- Embeds Spire.Pdf.dll into the exe so a single file is distributed. -->
     <PackageReference Include="Costura.Fody" Version="5.7.0" PrivateAssets="all" />
     <PackageReference Include="Fody" Version="6.8.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
   </ItemGroup>
 
 </Project>

@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using Spire.Pdf;
 using Spire.Pdf.Conversion;
 
 namespace OfdToPdf
@@ -9,10 +11,27 @@ namespace OfdToPdf
         public bool Success { get; set; }
         public string OutputPath { get; set; }
         public string Error { get; set; }
+        /// <summary>Fonts the OFD needs that are neither embedded nor installed (text may look wrong).</summary>
+        public List<string> MissingFonts { get; set; } = new List<string>();
     }
 
     public static class Converter
     {
+        static Converter()
+        {
+            // Let the engine resolve fonts from the "fonts" folder next to the exe as well as
+            // the system fonts, so CJK/Thai/other scripts render instead of falling back to boxes.
+            try
+            {
+                if (Directory.Exists(FontCheck.CustomFontDir))
+                    PdfDocument.SetCustomFontsFolders(FontCheck.CustomFontDir);
+            }
+            catch (Exception)
+            {
+                // Font folder is best-effort; conversion still works with system fonts.
+            }
+        }
+
         /// <summary>
         /// Destination PDF path for an input file: <paramref name="outputDir"/> if given,
         /// otherwise the input's own folder.
@@ -40,10 +59,19 @@ namespace OfdToPdf
 
                 Directory.CreateDirectory(Path.GetDirectoryName(output));
 
-                var converter = new OfdConverter(input);
-                converter.ToPdf(output);
+                var missing = FontCheck.FindMissingFonts(input);
 
-                return new ConvertOutcome { Success = true, OutputPath = output };
+                var converter = new OfdConverter(input);
+                try
+                {
+                    converter.ToPdf(output);
+                }
+                finally
+                {
+                    converter.Dispose();
+                }
+
+                return new ConvertOutcome { Success = true, OutputPath = output, MissingFonts = missing };
             }
             catch (Exception ex)
             {

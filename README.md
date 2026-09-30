@@ -21,7 +21,15 @@ exit code `0` = สำเร็จทั้งหมด, `1` = มีไฟล�
    ```
    dotnet build src/OfdToPdf/OfdToPdf.csproj -c Release -o out
    ```
-   ได้ `out\OfdToPdf.exe` (Spire.PDF ถูกฝังในตัว exe ด้วย Costura.Fody) — ต้องมี .NET Framework 4.8 (มีใน Windows 10/11 อยู่แล้ว)
+   ได้ `out\OfdToPdf.exe` (Spire.PDF ถูกฝังในตัว exe ด้วย Costura.Fody; ต้องมี `HarfBuzzSharp.dll` และโฟลเดอร์ `x64`/`x86` อยู่ข้าง exe) — ต้องมี .NET Framework 4.8 (มีใน Windows 10/11 อยู่แล้ว)
+
+## ตัวอักษรเพี้ยน / รองรับหลายภาษา
+ตัวอักษรใน PDF เพี้ยนหรือเป็นกล่องสี่เหลี่ยม มักเกิดจากไฟล์ OFD ใช้ฟอนต์ที่ไม่ได้ฝังมาในไฟล์
+(ส่วนใหญ่เป็นฟอนต์จีน เช่น 楷体 KaiTi, 仿宋 FangSong) และเครื่องไม่มีฟอนต์นั้น
+โปรแกรมจะตรวจให้อัตโนมัติ และแสดง "⚠ ไม่มีฟอนต์: …" ในช่องสถานะ วิธีแก้:
+
+1. ติดตั้ง *Chinese (Simplified) Supplemental Fonts* ใน Settings → Apps → Optional features หรือ
+2. คัดลอกไฟล์ฟอนต์ (.ttf/.ttc/.otf) ไปไว้ในโฟลเดอร์ `fonts` ข้างไฟล์ exe แล้วเปิดโปรแกรมใหม่
 
 ## ข้อจำกัดสำคัญ
 Spire.PDF รุ่นฟรีจำกัดจำนวนหน้า (ประมาณ 10 หน้า) และใส่ watermark ทดลองใช้ — เหมือนโปรเจกต์ต้นแบบ

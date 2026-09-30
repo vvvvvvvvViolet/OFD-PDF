@@ -44,7 +44,12 @@ namespace OfdToPdf
             foreach (string f in files)
             {
                 var r = Converter.Convert(f, outDir, overwrite);
-                if (r.Success) Console.WriteLine("[OK]     " + f + " -> " + r.OutputPath);
+                if (r.Success)
+                {
+                    Console.WriteLine("[OK]     " + f + " -> " + r.OutputPath);
+                    if (r.MissingFonts.Count > 0)
+                        Console.WriteLine("         warning: fonts not installed (text may be garbled): " + string.Join(", ", r.MissingFonts));
+                }
                 else { Console.WriteLine("[FAILED] " + f + " : " + r.Error); failed = true; }
             }
             return failed ? 1 : 0;
