@@ -688,7 +688,9 @@ namespace OfdToPdf
         private void UpdateUi(bool keepStatus = false)
         {
             bool any = list.Items.Count > 0;
+            // Show one or the other; overlapping docked controls draw unreliably.
             emptyState.Visible = !any;
+            list.Visible = any;
             txtOut.Enabled = btnBrowse.Enabled = rbFolder.Checked && !busy;
             btnAdd.Enabled = btnAddFolder.Enabled = !busy;
             btnRemove.Enabled = !busy && list.SelectedItems.Count > 0;
