@@ -6,31 +6,47 @@ using Spire.Pdf.Conversion;
 
 namespace OfdToPdf
 {
+    public enum OutcomeKind { Converted, Skipped, Failed }
+
     public sealed class ConvertOutcome
     {
-        public bool Success { get; set; }
+        public OutcomeKind Kind { get; set; }
+        public bool Success { get { return Kind == OutcomeKind.Converted; } }
         public string OutputPath { get; set; }
         public string Error { get; set; }
+        public OfdInfo Info { get; set; }
         /// <summary>Fonts the OFD needs that are neither embedded nor installed (text may look wrong).</summary>
         public List<string> MissingFonts { get; set; } = new List<string>();
         /// <summary>Missing fonts that were automatically replaced: original -> replacement.</summary>
         public Dictionary<string, string> SubstitutedFonts { get; set; } = new Dictionary<string, string>();
+        /// <summary>Things the user should check in the result (page limit, signatures, ...).</summary>
+        public List<string> Warnings { get; set; } = new List<string>();
     }
 
     public static class Converter
     {
         static Converter()
         {
-            // Let the engine resolve fonts from the "fonts" folder next to the exe as well as
-            // the system fonts, so CJK/Thai/other scripts render instead of falling back to boxes.
+            RefreshFonts();
+        }
+
+        /// <summary>
+        /// Re-read installed fonts and the fonts folders, so fonts added while the program is open
+        /// are used by the next conversion.
+        /// </summary>
+        public static void RefreshFonts()
+        {
+            FontCheck.Refresh();
             try
             {
-                if (Directory.Exists(FontCheck.CustomFontDir))
-                    PdfDocument.LoadCustomFontFolder(FontCheck.CustomFontDir);
+                PdfDocument.ClearCustomFonts();
+                foreach (string dir in AppPaths.ExistingFontDirs())
+                    PdfDocument.LoadCustomFontFolder(dir);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Font folder is best-effort; conversion still works with system fonts.
+                // Font folders are best-effort; conversion still works with system fonts.
+                Log.Write("font folder load failed: " + ex.Message);
             }
         }
 
@@ -46,61 +62,141 @@ namespace OfdToPdf
             return Path.Combine(dir, Path.GetFileNameWithoutExtension(input) + ".pdf");
         }
 
-        public static ConvertOutcome Convert(string input, string outputDir, bool overwrite)
+        /// <param name="claimed">
+        /// Output paths already written in this batch. Two inputs with the same name never write
+        /// to the same PDF, even in <see cref="ConflictMode.Overwrite"/>.
+        /// </param>
+        public static ConvertOutcome Convert(string input, string outputDir, ConflictMode mode, ISet<string> claimed = null)
         {
+            var outcome = Run(input, outputDir, mode, claimed);
+            Log.Write(string.Format("{0,-9} {1} -> {2}{3}", outcome.Kind, input, outcome.OutputPath,
+                outcome.Error != null ? "  error: " + outcome.Error : ""));
+            return outcome;
+        }
+
+        private static ConvertOutcome Run(string input, string outputDir, ConflictMode mode, ISet<string> claimed)
+        {
+            var outcome = new ConvertOutcome();
+            string temp = null, tempPdf = null;
             try
             {
                 if (string.IsNullOrEmpty(input) || !File.Exists(input))
-                    return Fail("Input file not found");
+                    return Fail(outcome, "ไม่พบไฟล์");
                 if (!string.Equals(Path.GetExtension(input), ".ofd", StringComparison.OrdinalIgnoreCase))
-                    return Fail("Not an .ofd file");
+                    return Fail(outcome, "ไม่ใช่ไฟล์ .ofd");
 
-                string output = GetOutputPath(input, outputDir);
-                if (!overwrite && File.Exists(output))
-                    output = UniquePath(output);
+                outcome.Info = OfdInfo.Inspect(input);
+                if (!outcome.Info.IsValid)
+                    return Fail(outcome, outcome.Info.Error);
 
+                string output = ReserveOutput(GetOutputPath(input, outputDir), mode, claimed);
+                if (output == null)
+                {
+                    outcome.Kind = OutcomeKind.Skipped;
+                    outcome.OutputPath = GetOutputPath(input, outputDir);
+                    return outcome;
+                }
+                outcome.OutputPath = output;
                 Directory.CreateDirectory(Path.GetDirectoryName(output));
 
+                // Render into a temporary file next to the target, then swap it in, so a failed
+                // conversion never leaves a half-written PDF or destroys an existing one.
+                tempPdf = Path.Combine(Path.GetDirectoryName(output),
+                    "~" + Path.GetFileNameWithoutExtension(output) + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp.pdf");
+
                 var plan = FontCheck.Analyze(input);
-                string temp = null;
-                try
+                if (plan.Substitutions.Count > 0)
                 {
-                    if (plan.Substitutions.Count > 0)
+                    temp = FontCheck.WriteSubstitutedCopy(input, plan.Substitutions);
+                    try
                     {
-                        temp = FontCheck.WriteSubstitutedCopy(input, plan.Substitutions);
-                        try
-                        {
-                            ToPdf(temp, output);
-                        }
-                        catch (Exception)
-                        {
-                            // The patched copy should never be worse, but fall back to the original.
-                            plan.Unresolved.AddRange(plan.Substitutions.Keys);
-                            plan.Substitutions.Clear();
-                            ToPdf(input, output);
-                        }
+                        ToPdf(temp, tempPdf);
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        ToPdf(input, output);
+                        // The patched copy should never be worse, but fall back to the original.
+                        Log.Write("font substitution failed, retrying original: " + ex.Message);
+                        plan.Unresolved.AddRange(plan.Substitutions.Keys);
+                        plan.Substitutions.Clear();
+                        ToPdf(input, tempPdf);
                     }
                 }
-                finally
+                else
                 {
-                    if (temp != null) try { File.Delete(temp); } catch (Exception) { }
+                    ToPdf(input, tempPdf);
                 }
 
-                return new ConvertOutcome
-                {
-                    Success = true,
-                    OutputPath = output,
-                    MissingFonts = plan.Unresolved,
-                    SubstitutedFonts = plan.Substitutions,
-                };
+                Commit(tempPdf, output);
+                tempPdf = null;
+
+                outcome.Kind = OutcomeKind.Converted;
+                outcome.MissingFonts = plan.Unresolved;
+                outcome.SubstitutedFonts = plan.Substitutions;
+                if (outcome.Info.OverPageLimit)
+                    outcome.Warnings.Add(string.Format(
+                        "เอกสารมี {0} หน้า แต่ Free Spire.PDF รองรับสูงสุด {1} หน้า — ตรวจว่า PDF ครบทุกหน้า",
+                        outcome.Info.PageCount, OfdInfo.FreePageLimit));
+                if (outcome.Info.HasSignatures)
+                    outcome.Warnings.Add("ต้นฉบับมีลายเซ็นดิจิทัล — PDF เป็นสำเนาสำหรับอ่าน ลายเซ็นไม่ได้ถูกตรวจหรือคงไว้");
+                return outcome;
+            }
+            catch (IOException ex) when (IsLocked(ex))
+            {
+                return Fail(outcome, "ไฟล์ PDF ปลายทางถูกเปิดอยู่ในโปรแกรมอื่น — ปิดไฟล์แล้วลองใหม่");
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Fail(outcome, "ไม่มีสิทธิ์เขียนไฟล์ในโฟลเดอร์ปลายทาง");
             }
             catch (Exception ex)
             {
-                return Fail(ex.Message);
+                Log.Write("conversion error: " + ex);
+                return Fail(outcome, ex.Message);
+            }
+            finally
+            {
+                if (temp != null) TryDelete(temp);
+                if (tempPdf != null) TryDelete(tempPdf);
+            }
+        }
+
+        /// <summary>
+        /// Picks the PDF path to write, honouring <paramref name="mode"/> and paths already used in
+        /// this batch. Returns null when the file should be skipped.
+        /// </summary>
+        private static string ReserveOutput(string wanted, ConflictMode mode, ISet<string> claimed)
+        {
+            var batch = claimed ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            lock (batch)
+            {
+                string path = wanted;
+                bool usedInBatch = batch.Contains(path);
+                if (File.Exists(path) || usedInBatch)
+                {
+                    if (mode == ConflictMode.Skip && !usedInBatch) return null;
+                    if (mode == ConflictMode.Rename || usedInBatch) path = UniquePath(path, batch);
+                }
+                batch.Add(path);
+                return path;
+            }
+        }
+
+        private static void Commit(string tempPdf, string output)
+        {
+            if (!File.Exists(output))
+            {
+                File.Move(tempPdf, output);
+                return;
+            }
+            try
+            {
+                File.Replace(tempPdf, output, null);
+            }
+            catch (PlatformNotSupportedException)
+            {
+                // Some network shares cannot replace in place.
+                File.Copy(tempPdf, output, true);
+                File.Delete(tempPdf);
             }
         }
 
@@ -117,12 +213,25 @@ namespace OfdToPdf
             }
         }
 
-        private static ConvertOutcome Fail(string message)
+        private static bool IsLocked(IOException ex)
         {
-            return new ConvertOutcome { Success = false, Error = message };
+            int code = ex.HResult & 0xFFFF;
+            return code == 32 || code == 33; // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
         }
 
-        private static string UniquePath(string path)
+        private static ConvertOutcome Fail(ConvertOutcome outcome, string message)
+        {
+            outcome.Kind = OutcomeKind.Failed;
+            outcome.Error = message;
+            return outcome;
+        }
+
+        private static void TryDelete(string path)
+        {
+            try { File.Delete(path); } catch (Exception) { }
+        }
+
+        private static string UniquePath(string path, ISet<string> batch)
         {
             string dir = Path.GetDirectoryName(path);
             string name = Path.GetFileNameWithoutExtension(path);
@@ -130,7 +239,7 @@ namespace OfdToPdf
             for (int i = 1; ; i++)
             {
                 string candidate = Path.Combine(dir, name + " (" + i + ")" + ext);
-                if (!File.Exists(candidate)) return candidate;
+                if (!File.Exists(candidate) && !batch.Contains(candidate)) return candidate;
             }
         }
     }

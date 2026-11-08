@@ -27,9 +27,6 @@ namespace OfdToPdf
     /// </summary>
     public static class FontCheck
     {
-        /// <summary>Folder next to the exe where users can drop extra .ttf/.ttc/.otf fonts.</summary>
-        public static readonly string CustomFontDir =
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "fonts");
 
         // Chinese font names used in OFD files -> normalized Windows family names.
         private static readonly Dictionary<string, string> Aliases = new Dictionary<string, string>
@@ -51,6 +48,15 @@ namespace OfdToPdf
 
         private static HashSet<string> available;
         private static readonly object Gate = new object();
+
+        /// <summary>
+        /// Forget the cached font list so fonts installed or dropped into a fonts folder since the
+        /// last batch are picked up without restarting the program.
+        /// </summary>
+        public static void Refresh()
+        {
+            lock (Gate) available = null;
+        }
 
         public static FontPlan Analyze(string ofdPath)
         {
@@ -76,32 +82,48 @@ namespace OfdToPdf
         public static string WriteSubstitutedCopy(string ofdPath, IDictionary<string, string> subs)
         {
             string temp = Path.Combine(Path.GetTempPath(), "OfdToPdf_" + Guid.NewGuid().ToString("N") + ".ofd");
-            using (var src = ZipFile.OpenRead(ofdPath))
-            using (var dst = ZipFile.Open(temp, ZipArchiveMode.Create))
+            try
             {
-                foreach (var entry in src.Entries)
+                using (var src = ZipFile.OpenRead(ofdPath))
+                using (var dst = ZipFile.Open(temp, ZipArchiveMode.Create))
                 {
-                    var outEntry = dst.CreateEntry(entry.FullName, CompressionLevel.Optimal);
-                    byte[] data;
-                    using (var s = entry.Open())
-                    using (var ms = new MemoryStream())
+                    foreach (var entry in src.Entries)
                     {
-                        s.CopyTo(ms);
-                        data = ms.ToArray();
+                        var outEntry = dst.CreateEntry(entry.FullName, CompressionLevel.Optimal);
+                        bool xml = entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)
+                            && entry.Length <= SafeXml.MaxPartBytes;
+                        using (var s = entry.Open())
+                        using (var o = outEntry.Open())
+                        {
+                            if (!xml)
+                            {
+                                s.CopyTo(o); // images, seals, fonts: streamed, never buffered
+                                continue;
+                            }
+                            byte[] data;
+                            using (var ms = new MemoryStream())
+                            {
+                                s.CopyTo(ms);
+                                data = ms.ToArray();
+                            }
+                            data = RewriteFonts(data, subs) ?? data;
+                            o.Write(data, 0, data.Length);
+                        }
                     }
-                    if (entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
-                        data = RewriteFonts(data, subs) ?? data;
-                    using (var o = outEntry.Open())
-                        o.Write(data, 0, data.Length);
                 }
+                return temp;
             }
-            return temp;
+            catch
+            {
+                try { File.Delete(temp); } catch (Exception) { }
+                throw;
+            }
         }
 
         private static byte[] RewriteFonts(byte[] xml, IDictionary<string, string> subs)
         {
-            var doc = new XmlDocument { PreserveWhitespace = true };
-            try { doc.Load(new MemoryStream(xml)); } catch (XmlException) { return null; }
+            var doc = SafeXml.Load(xml);
+            if (doc == null) return null;
 
             bool changed = false;
             foreach (XmlElement el in FontElements(doc))
@@ -138,11 +160,8 @@ namespace OfdToPdf
                 {
                     foreach (var entry in zip.Entries.Where(e => e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
                     {
-                        var doc = new XmlDocument();
-                        using (var s = entry.Open())
-                        {
-                            try { doc.Load(s); } catch (XmlException) { continue; }
-                        }
+                        var doc = SafeXml.Load(entry);
+                        if (doc == null) continue;
                         foreach (XmlElement el in FontElements(doc))
                         {
                             bool embedded = el.ChildNodes.OfType<XmlElement>().Any(c => c.LocalName == "FontFile");
@@ -186,16 +205,14 @@ namespace OfdToPdf
                 using (var installed = new InstalledFontCollection())
                     foreach (var f in installed.Families) AddFamily(set, f);
 
-                if (Directory.Exists(CustomFontDir))
+                using (var custom = new PrivateFontCollection())
                 {
-                    using (var custom = new PrivateFontCollection())
-                    {
-                        foreach (string file in Directory.EnumerateFiles(CustomFontDir))
+                    foreach (string dir in AppPaths.ExistingFontDirs())
+                        foreach (string file in Directory.EnumerateFiles(dir))
                         {
                             try { custom.AddFontFile(file); } catch (Exception) { }
                         }
-                        foreach (var f in custom.Families) AddFamily(set, f);
-                    }
+                    foreach (var f in custom.Families) AddFamily(set, f);
                 }
                 return available = set;
             }

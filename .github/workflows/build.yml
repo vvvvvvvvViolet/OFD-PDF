@@ -40,17 +40,68 @@ jobs:
           if (-not (Test-Path dist/OfdToPdf/OfdToPdf.exe)) { throw "exe missing" }
           Compress-Archive -Path dist/OfdToPdf -DestinationPath OfdToPdf-windows.zip
 
-      - name: Smoke test (missing Chinese fonts must not render as boxes)
+      - name: Tests (fonts, watermark, conflicts, corrupt input, page limit)
         shell: pwsh
         env:
           PYTHONIOENCODING: utf-8
         run: |
+          $exe = (Resolve-Path dist/OfdToPdf/OfdToPdf.exe).Path
+          function Run([string[]]$a) {
+            $p = Start-Process $exe -ArgumentList $a -PassThru
+            if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "timed out: $a" }
+            return $p.ExitCode
+          }
+          function Must([bool]$ok, [string]$what) { if (-not $ok) { throw "FAILED: $what" } else { Write-Host "ok: $what" } }
+
           Get-ChildItem C:/Windows/Fonts | Where-Object Name -match 'simhei|msyh|simsun|simkai|simfang|deng' | Format-Table Name
           python -m pip install --quiet pymupdf
-          python tests/make_sample_ofd.py sample.ofd
-          $p = Start-Process dist/OfdToPdf/OfdToPdf.exe -ArgumentList 'sample.ofd','--overwrite' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "converter exited with $($p.ExitCode)" }
-          python tests/check_pdf.py sample.pdf
+          New-Item -ItemType Directory ci | Out-Null
+          Set-Location ci
+          python ../tests/make_sample_ofd.py sample.ofd
+          python ../tests/make_sample_ofd.py big.ofd --pages 12 --signed
+          Set-Content bad.ofd "this is not an OFD package"
+
+          # Missing Chinese fonts are substituted, no watermark.
+          Must ((Run @('--cli', 'sample.ofd')) -eq 0) "convert sample.ofd"
+          python ../tests/check_pdf.py sample.pdf
+          if ($LASTEXITCODE -ne 0) { throw "check_pdf failed" }
+
+          # Conflict handling.
+          Must ((Run @('--cli', 'sample.ofd')) -eq 0) "second run"
+          Must (Test-Path 'sample (1).pdf') "default mode keeps the old PDF and writes 'sample (1).pdf'"
+          Must ((Run @('--cli', '--skip-existing', 'sample.ofd')) -eq 0) "--skip-existing run"
+          Must (-not (Test-Path 'sample (2).pdf')) "--skip-existing writes nothing"
+          Must ((Run @('--cli', '--overwrite', 'sample.ofd')) -eq 0) "--overwrite run"
+          Must (-not (Test-Path 'sample (2).pdf')) "--overwrite replaces in place"
+
+          # Corrupt input fails cleanly.
+          Must ((Run @('--cli', 'bad.ofd')) -eq 1) "corrupt file exits with 1"
+          Must (-not (Test-Path 'bad.pdf')) "corrupt file leaves no PDF"
+
+          # Page limit probe: report what Free Spire does with more than 10 pages.
+          $code = Run @('--cli', 'big.ofd')
+          Write-Host "big.ofd (12 pages, signed) exit code: $code"
+          if (Test-Path big.pdf) {
+            python -c "import pymupdf,sys; d=pymupdf.open('big.pdf'); print('PDF pages:', d.page_count); print('last page text:', d[-1].get_text().strip()[-40:])"
+          }
+
+          Must (-not (Get-ChildItem -Filter '*.tmp.pdf')) "no temporary files left behind"
+          $log = Join-Path $env:LOCALAPPDATA 'OfdToPdf/log.txt'
+          Must (Test-Path $log) "conversion log written"
+          Get-Content $log -Tail 12
+
+      - name: UI snapshots
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $exe = (Resolve-Path dist/OfdToPdf/OfdToPdf.exe).Path
+          Set-Location ci
+          foreach ($case in @(@('empty.png'), @('list.png', 'sample.ofd', 'big.ofd', 'bad.ofd'))) {
+            $p = Start-Process $exe -ArgumentList (@('--ui-snapshot') + $case) -PassThru
+            if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "UI timed out: $case" }
+            if (-not (Test-Path $case[0])) { throw "no snapshot: $($case[0])" }
+            Write-Host "snapshot ok: $($case[0])"
+          }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -60,10 +111,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smoke-test
+          name: ci-output
           path: |
-            sample.pdf
-            sample.pdf.png
+            ci/*.png
+            ci/*.pdf
           if-no-files-found: ignore
 
       - name: Publish release asset
