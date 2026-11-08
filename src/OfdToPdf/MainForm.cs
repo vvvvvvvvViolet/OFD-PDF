@@ -563,11 +563,13 @@ namespace OfdToPdf
 
         private void Summarize(List<Row> rows, bool cancelled, int requested)
         {
-            int converted = rows.Count(r => r.State == State.Done);
+            int converted = rows.Count(r => r.State == State.Done && !r.Outcome.Truncated);
+            var partial = rows.Where(r => r.State == State.Done && r.Outcome.Truncated).ToList();
             int skipped = rows.Count(r => r.State == State.Skipped);
             var failed = rows.Where(r => r.State == State.Failed).ToList();
 
             var parts = new List<string> { "แปลงสำเร็จ " + converted + " ไฟล์" };
+            if (partial.Count > 0) parts.Add("ได้ไม่ครบ " + partial.Count);
             if (skipped > 0) parts.Add("ข้าม " + skipped);
             if (failed.Count > 0) parts.Add("ล้มเหลว " + failed.Count);
             if (cancelled) parts.Add("หยุดกลางคัน (ยังไม่ได้แปลง " + (requested - rows.Count) + " ไฟล์)");
@@ -575,14 +577,13 @@ namespace OfdToPdf
 
             var outcomes = rows.Where(r => r.Outcome != null).Select(r => r.Outcome).ToList();
             var unresolved = outcomes.SelectMany(o => o.MissingFonts).Distinct().ToList();
-            var overLimit = rows.Where(r => r.State == State.Done && r.Info != null && r.Info.OverPageLimit).ToList();
             int signed = rows.Count(r => r.State == State.Done && r.Info != null && r.Info.HasSignatures);
             var substituted = outcomes.SelectMany(o => o.SubstitutedFonts).Select(kv => kv.Key + " → " + kv.Value).Distinct().ToList();
 
-            if (chkOpenWhenDone.Checked && converted > 0 && snapshotPath == null)
+            if (chkOpenWhenDone.Checked && converted + partial.Count > 0 && snapshotPath == null)
                 Reveal(rows.First(r => r.State == State.Done).Outcome.OutputPath);
 
-            bool nothingToSay = failed.Count == 0 && unresolved.Count == 0 && overLimit.Count == 0 && signed == 0 && !cancelled;
+            bool nothingToSay = failed.Count == 0 && unresolved.Count == 0 && partial.Count == 0 && signed == 0 && !cancelled;
             if (nothingToSay || snapshotPath != null) return;
 
             var sb = new StringBuilder(statusLabel.Text + "\n");
@@ -593,9 +594,12 @@ namespace OfdToPdf
                     sb.Append("  • " + Path.GetFileName(r.FilePath) + ": " + (r.Outcome == null ? "" : r.Outcome.Error) + "\n");
                 if (failed.Count > 8) sb.Append("  … และอีก " + (failed.Count - 8) + " ไฟล์ (ดูในรายการ)\n");
             }
-            if (overLimit.Count > 0)
-                sb.Append(string.Format("\n⚠ {0} ไฟล์มีมากกว่า {1} หน้า — Free Spire.PDF รองรับสูงสุด {1} หน้า โปรดตรวจว่า PDF ครบ\n",
-                    overLimit.Count, OfdInfo.FreePageLimit));
+            if (partial.Count > 0)
+            {
+                sb.Append(string.Format("\n⚠ PDF ไม่ครบทุกหน้า — Free Spire.PDF แปลงไฟล์ OFD ได้เฉพาะ {0} หน้าแรก:\n", OfdInfo.FreePageLimit));
+                foreach (var r in partial.Take(8))
+                    sb.Append(string.Format("  • {0}: ได้ {1} จาก {2} หน้า\n", Path.GetFileName(r.FilePath), r.Outcome.PdfPages, r.Info.PageCount));
+            }
             if (signed > 0)
                 sb.Append("\nℹ " + signed + " ไฟล์มีลายเซ็นดิจิทัล — PDF ที่ได้เป็นสำเนาสำหรับอ่าน ลายเซ็นไม่ได้ถูกตรวจหรือคงไว้ ให้เก็บไฟล์ OFD ต้นฉบับไว้เป็นหลักฐาน\n");
             if (substituted.Count > 0)
@@ -611,7 +615,7 @@ namespace OfdToPdf
                 return;
             }
             MessageBox.Show(this, sb.ToString(), "ผลการแปลง", MessageBoxButtons.OK,
-                failed.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+                failed.Count > 0 || partial.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
         }
 
         // ---- row rendering ---------------------------------------------------------------
@@ -640,7 +644,7 @@ namespace OfdToPdf
                     else
                     {
                         var hints = new List<string>();
-                        if (info != null && info.OverPageLimit) hints.Add("⚠ เกิน " + OfdInfo.FreePageLimit + " หน้า อาจแปลงไม่ครบ");
+                        if (info != null && info.OverPageLimit) hints.Add("⚠ เกิน " + OfdInfo.FreePageLimit + " หน้า: รุ่นฟรีแปลงได้แค่ " + OfdInfo.FreePageLimit + " หน้าแรก");
                         if (info != null && info.HasSignatures) hints.Add("มีลายเซ็นดิจิทัล");
                         detail.Text = string.Join(" · ", hints);
                         detail.ForeColor = info != null && info.OverPageLimit ? Amber : SystemColors.GrayText;
@@ -652,16 +656,16 @@ namespace OfdToPdf
                     detail.Text = "";
                     break;
                 case State.Done:
-                    status.Text = "✓ สำเร็จ";
-                    status.ForeColor = Green;
+                    status.Text = o.Truncated ? "⚠ ไม่ครบ" : "✓ สำเร็จ";
+                    status.ForeColor = o.Truncated ? Amber : Green;
                     var bits = new List<string> { "→ " + Path.GetFileName(o.OutputPath) };
+                    if (o.Truncated) bits.Add(string.Format("⚠ ได้ {0} จาก {1} หน้า", o.PdfPages, info.PageCount));
                     if (o.SubstitutedFonts.Count > 0)
                         bits.Add("แทนฟอนต์ " + string.Join(", ", o.SubstitutedFonts.Select(kv => kv.Key + "→" + kv.Value)));
                     if (o.MissingFonts.Count > 0) bits.Add("⚠ ไม่มีฟอนต์ " + string.Join(", ", o.MissingFonts));
-                    if (info != null && info.OverPageLimit) bits.Add("⚠ ตรวจจำนวนหน้า");
                     if (info != null && info.HasSignatures) bits.Add("ลายเซ็นไม่ถูกคงไว้ใน PDF");
                     detail.Text = string.Join(" · ", bits);
-                    detail.ForeColor = o.MissingFonts.Count > 0 || (info != null && info.OverPageLimit) ? Amber : SystemColors.WindowText;
+                    detail.ForeColor = o.MissingFonts.Count > 0 || o.Truncated ? Amber : SystemColors.WindowText;
                     tip += "\n→ " + o.OutputPath + (o.Warnings.Count > 0 ? "\n" + string.Join("\n", o.Warnings) : "") + "\n(ดับเบิลคลิกเพื่อเปิด)";
                     break;
                 case State.Skipped:

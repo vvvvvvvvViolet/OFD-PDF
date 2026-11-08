@@ -19,6 +19,10 @@ namespace OfdToPdf
         public List<string> MissingFonts { get; set; } = new List<string>();
         /// <summary>Missing fonts that were automatically replaced: original -> replacement.</summary>
         public Dictionary<string, string> SubstitutedFonts { get; set; } = new Dictionary<string, string>();
+        /// <summary>Pages in the written PDF (-1 if it could not be counted).</summary>
+        public int PdfPages { get; set; } = -1;
+        /// <summary>The PDF has fewer pages than the OFD: the free engine dropped the rest.</summary>
+        public bool Truncated { get; set; }
         /// <summary>Things the user should check in the result (page limit, signatures, ...).</summary>
         public List<string> Warnings { get; set; } = new List<string>();
     }
@@ -69,7 +73,7 @@ namespace OfdToPdf
         public static ConvertOutcome Convert(string input, string outputDir, ConflictMode mode, ISet<string> claimed = null)
         {
             var outcome = Run(input, outputDir, mode, claimed);
-            Log.Write(string.Format("{0,-9} {1} -> {2}{3}", outcome.Kind, input, outcome.OutputPath,
+            Log.Write(string.Format("{0,-9} {1} -> {2}{3}", outcome.Truncated ? "Partial" : outcome.Kind.ToString(), input, outcome.OutputPath,
                 outcome.Error != null ? "  error: " + outcome.Error : ""));
             return outcome;
         }
@@ -132,10 +136,14 @@ namespace OfdToPdf
                 outcome.Kind = OutcomeKind.Converted;
                 outcome.MissingFonts = plan.Unresolved;
                 outcome.SubstitutedFonts = plan.Substitutions;
-                if (outcome.Info.OverPageLimit)
+                outcome.PdfPages = CountPdfPages(output);
+                if (outcome.PdfPages >= 0 && outcome.PdfPages < outcome.Info.PageCount)
+                {
+                    outcome.Truncated = true;
                     outcome.Warnings.Add(string.Format(
-                        "เอกสารมี {0} หน้า แต่ Free Spire.PDF รองรับสูงสุด {1} หน้า — ตรวจว่า PDF ครบทุกหน้า",
-                        outcome.Info.PageCount, OfdInfo.FreePageLimit));
+                        "PDF มีแค่ {0} จาก {1} หน้า — Free Spire.PDF แปลงไฟล์ OFD ได้เฉพาะ {2} หน้าแรก",
+                        outcome.PdfPages, outcome.Info.PageCount, OfdInfo.FreePageLimit));
+                }
                 if (outcome.Info.HasSignatures)
                     outcome.Warnings.Add("ต้นฉบับมีลายเซ็นดิจิทัล — PDF เป็นสำเนาสำหรับอ่าน ลายเซ็นไม่ได้ถูกตรวจหรือคงไว้");
                 return outcome;
@@ -210,6 +218,28 @@ namespace OfdToPdf
             finally
             {
                 converter.Dispose();
+            }
+        }
+
+        private static int CountPdfPages(string pdf)
+        {
+            try
+            {
+                var doc = new PdfDocument();
+                try
+                {
+                    doc.LoadFromFile(pdf);
+                    return doc.Pages.Count;
+                }
+                finally
+                {
+                    doc.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write("page count failed: " + ex.Message);
+                return -1;
             }
         }
 

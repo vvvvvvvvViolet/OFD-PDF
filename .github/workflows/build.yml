@@ -58,6 +58,8 @@ jobs:
           New-Item -ItemType Directory ci | Out-Null
           Set-Location ci
           python ../tests/make_sample_ofd.py sample.ofd
+          python ../tests/make_sample_ofd.py three.ofd --pages 3
+          python ../tests/make_sample_ofd.py four.ofd --pages 4
           python ../tests/make_sample_ofd.py big.ofd --pages 12 --signed
           Set-Content bad.ofd "this is not an OFD package"
 
@@ -78,12 +80,14 @@ jobs:
           Must ((Run @('--cli', 'bad.ofd')) -eq 1) "corrupt file exits with 1"
           Must (-not (Test-Path 'bad.pdf')) "corrupt file leaves no PDF"
 
-          # Page limit probe: report what Free Spire does with more than 10 pages.
-          $code = Run @('--cli', 'big.ofd')
-          Write-Host "big.ofd (12 pages, signed) exit code: $code"
-          if (Test-Path big.pdf) {
-            python -c "import pymupdf,sys; d=pymupdf.open('big.pdf'); print('PDF pages:', d.page_count); print('last page text:', d[-1].get_text().strip()[-40:])"
-          }
+          # Page limit: Free Spire converts only the first 3 OFD pages. Truncation must be reported.
+          function Pages([string]$pdf) { [int](python -c "import pymupdf,sys; print(pymupdf.open(sys.argv[1]).page_count)" $pdf) }
+          Must ((Run @('--cli', 'three.ofd')) -eq 0) "3-page OFD converts fully (exit 0)"
+          Must ((Pages three.pdf) -eq 3) "3-page OFD gives 3 PDF pages"
+          Must ((Run @('--cli', 'four.ofd')) -eq 1) "4-page OFD is reported as partial (exit 1)"
+          Write-Host "four.pdf pages: $(Pages four.pdf)"
+          Must ((Run @('--cli', 'big.ofd')) -eq 1) "12-page signed OFD is reported as partial (exit 1)"
+          Write-Host "big.pdf pages: $(Pages big.pdf)"
 
           Must (-not (Get-ChildItem -Filter '*.tmp.pdf')) "no temporary files left behind"
           $log = Join-Path $env:LOCALAPPDATA 'OfdToPdf/log.txt'
@@ -96,11 +100,16 @@ jobs:
         run: |
           $exe = (Resolve-Path dist/OfdToPdf/OfdToPdf.exe).Path
           Set-Location ci
-          foreach ($case in @(@('empty.png'), @('list.png', 'sample.ofd', 'big.ofd', 'bad.ofd'))) {
+          foreach ($case in @(@('empty.png'), @('list.png', 'sample.ofd', 'three.ofd', 'big.ofd', 'bad.ofd'))) {
             $p = Start-Process $exe -ArgumentList (@('--ui-snapshot') + $case) -PassThru
             if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "UI timed out: $case" }
             if (-not (Test-Path $case[0])) { throw "no snapshot: $($case[0])" }
             Write-Host "snapshot ok: $($case[0])"
+            # Artifacts are not always downloadable; also print the image so it can be read from the log.
+            $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path $case[0])))
+            Write-Host "BEGIN-PNG $($case[0])"
+            for ($i = 0; $i -lt $b64.Length; $i += 4000) { Write-Host ("PNG:" + $b64.Substring($i, [Math]::Min(4000, $b64.Length - $i))) }
+            Write-Host "END-PNG $($case[0])"
           }
 
       - uses: actions/upload-artifact@v4

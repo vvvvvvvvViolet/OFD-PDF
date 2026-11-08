@@ -9,8 +9,11 @@ namespace OfdToPdf
     /// <summary>Quick facts about an OFD package, read without rendering it.</summary>
     public sealed class OfdInfo
     {
-        /// <summary>Free Spire.PDF only handles this many pages per document.</summary>
-        public const int FreePageLimit = 10;
+        /// <summary>
+        /// Pages Free Spire.PDF converts from an OFD; the rest are silently dropped. Measured in CI
+        /// (a 12-page OFD gave a 3-page PDF) — the package notes' "10 pages" applies to PDFs, not OFD.
+        /// </summary>
+        public const int FreePageLimit = 3;
 
         public int PageCount { get; private set; }
         public bool HasSignatures { get; private set; }

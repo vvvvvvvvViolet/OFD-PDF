@@ -29,7 +29,7 @@ namespace OfdToPdf
   --cli                    ทำงานแบบ command line เสมอ แม้ไม่ได้เปิดจาก terminal
   -h, --help               แสดงวิธีใช้
 
-Exit code: 0 = สำเร็จทั้งหมด, 1 = มีไฟล์ล้มเหลว, 2 = ใช้ตัวเลือกผิด";
+Exit code: 0 = สำเร็จทั้งหมด, 1 = มีไฟล์ล้มเหลวหรือได้หน้าไม่ครบ, 2 = ใช้ตัวเลือกผิด";
 
         /// <summary>
         /// No args: GUI. With files: command line when started from a terminal (or with --cli);
@@ -99,7 +99,12 @@ Exit code: 0 = สำเร็จทั้งหมด, 1 = มีไฟล์�
                 switch (r.Kind)
                 {
                     case OutcomeKind.Converted:
-                        Console.WriteLine("[OK]      " + f + " -> " + r.OutputPath);
+                        if (r.Truncated)
+                        {
+                            Console.WriteLine("[PARTIAL] " + f + " -> " + r.OutputPath);
+                            failed++; // an incomplete PDF is not a success for scripts
+                        }
+                        else Console.WriteLine("[OK]      " + f + " -> " + r.OutputPath);
                         break;
                     case OutcomeKind.Skipped:
                         Console.WriteLine("[SKIPPED] " + f + " (มี " + r.OutputPath + " อยู่แล้ว)");
@@ -116,7 +121,7 @@ Exit code: 0 = สำเร็จทั้งหมด, 1 = มีไฟล์�
                 foreach (string w in r.Warnings)
                     Console.WriteLine("          หมายเหตุ: " + w);
             }
-            Console.WriteLine(string.Format("เสร็จ: {0} ไฟล์, ล้มเหลว {1}", files.Count, failed));
+            Console.WriteLine(string.Format("เสร็จ: {0} ไฟล์, ล้มเหลว/ไม่ครบ {1}", files.Count, failed));
             return failed > 0 ? 1 : 0;
         }
 
