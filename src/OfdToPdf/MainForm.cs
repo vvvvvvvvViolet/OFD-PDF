@@ -143,7 +143,8 @@ namespace OfdToPdf
             Controls.Add(root);
             // Size the footer row from its content (Panel.AutoSize is unreliable with docked children).
             root.RowStyles[2] = new RowStyle(SizeType.Absolute,
-                footerTable.GetPreferredSize(new Size(Px(900), 0)).Height + footer.Padding.Vertical + footer.Margin.Vertical + Px(2));
+                Math.Max(footerTable.GetPreferredSize(new Size(Px(700), 0)).Height, btnConvert.PreferredSize.Height)
+                + footer.Padding.Vertical + footer.Margin.Vertical + Px(2));
         }
 
         private Control BuildHeader()
@@ -314,13 +315,12 @@ namespace OfdToPdf
         {
             var footer = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, Px(12), 0, 0), Padding = new Padding(Px(16), Px(12), Px(16), Px(12)) };
             // Fill (not AutoSize): an auto-sized table grows past the card and clips the button.
-            var t = footerTable = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 3, BackColor = Theme.Card };
+            var t = footerTable = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 3, BackColor = Theme.Card };
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.Absolute, Px(10))); // progress row is always reserved
             for (int i = 0; i < 4; i++) t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             var lblDest = new Label { Text = "บันทึก PDF ที่", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, Px(6), 0) };
             cmbDest.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -339,7 +339,6 @@ namespace OfdToPdf
             btnConvert.Font = new Font("Segoe UI Semibold", 11f);
             btnConvert.Padding = new Padding(Px(22), Px(8), Px(22), Px(8));
             btnConvert.MinimumSize = new Size(Px(170), 0);
-            btnConvert.Anchor = AnchorStyles.Right;
             btnConvert.Click += (s, e) => OnConvertClicked();
 
             statusLabel.AutoSize = false;
@@ -359,13 +358,20 @@ namespace OfdToPdf
             t.Controls.Add(cmbDest, 1, 0);
             t.Controls.Add(lblConflict, 2, 0);
             t.Controls.Add(cmbConflict, 3, 0);
-            t.Controls.Add(btnConvert, 5, 0);
-            t.SetRowSpan(btnConvert, 3);
             t.Controls.Add(statusLabel, 0, 1);
             t.SetColumnSpan(statusLabel, 5);
             t.Controls.Add(progress, 0, 2);
             t.SetColumnSpan(progress, 5);
+
+            // The primary button gets its own column so the options table can never push it out.
+            var action = new Panel { Dock = DockStyle.Right, Width = Px(220), BackColor = Theme.Card };
+            action.Controls.Add(btnConvert);
+            action.Layout += (s, e) => btnConvert.Location = new Point(
+                action.Width - btnConvert.Width, Math.Max(0, (action.Height - btnConvert.Height) / 2));
+            btnConvert.SizeChanged += (s, e) => action.PerformLayout();
+
             footer.Controls.Add(t);
+            footer.Controls.Add(action);
             return footer;
         }
 
