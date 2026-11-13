@@ -313,7 +313,8 @@ namespace OfdToPdf
         private Control BuildFooter()
         {
             var footer = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, Px(12), 0, 0), Padding = new Padding(Px(16), Px(12), Px(16), Px(12)) };
-            var t = footerTable = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 6, RowCount = 3, BackColor = Theme.Card };
+            // Fill (not AutoSize): an auto-sized table grows past the card and clips the button.
+            var t = footerTable = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 3, BackColor = Theme.Card };
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.Absolute, Px(10))); // progress row is always reserved
