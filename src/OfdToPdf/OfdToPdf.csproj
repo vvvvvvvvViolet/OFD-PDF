@@ -8,7 +8,7 @@
     <AssemblyName>OfdToPdf</AssemblyName>
     <RootNamespace>OfdToPdf</RootNamespace>
     <ApplicationIcon>icon.ico</ApplicationIcon>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Authors>EARTH</Authors>
     <Company>EARTH</Company>
     <Product>OFD to PDF Converter</Product>
