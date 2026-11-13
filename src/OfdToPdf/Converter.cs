@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using Spire.Pdf;
 using Spire.Pdf.Conversion;
@@ -29,6 +30,9 @@ namespace OfdToPdf
 
     public static class Converter
     {
+        /// <summary>Spire is not documented as thread-safe: every engine call goes through this lock.</summary>
+        private static readonly object EngineLock = new object();
+
         static Converter()
         {
             RefreshFonts();
@@ -41,6 +45,7 @@ namespace OfdToPdf
         public static void RefreshFonts()
         {
             FontCheck.Refresh();
+            lock (EngineLock)
             try
             {
                 PdfDocument.ClearCustomFonts();
@@ -210,14 +215,53 @@ namespace OfdToPdf
 
         private static void ToPdf(string input, string output)
         {
-            var converter = new OfdConverter(input);
+            lock (EngineLock)
+            {
+                var converter = new OfdConverter(input);
+                try
+                {
+                    converter.ToPdf(output);
+                }
+                finally
+                {
+                    converter.Dispose();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Renders one page of a PDF for the in-app preview. Returns null if it cannot be rendered.
+        /// </summary>
+        public static Image RenderPdfPage(string pdf, int pageIndex, int dpi, out int pageCount)
+        {
+            pageCount = 0;
             try
             {
-                converter.ToPdf(output);
+                lock (EngineLock)
+                {
+                    var doc = new PdfDocument();
+                    try
+                    {
+                        doc.LoadFromFile(pdf);
+                        pageCount = doc.Pages.Count;
+                        if (pageCount == 0) return null;
+                        pageIndex = Math.Max(0, Math.Min(pageIndex, pageCount - 1));
+                        object rendered = doc.SaveAsImage(pageIndex, dpi, dpi);
+                        var image = rendered as Image;
+                        if (image != null) return image;
+                        var stream = rendered as Stream;
+                        return stream == null ? null : Image.FromStream(stream);
+                    }
+                    finally
+                    {
+                        doc.Close();
+                    }
+                }
             }
-            finally
+            catch (Exception ex)
             {
-                converter.Dispose();
+                Log.Write("preview failed: " + ex.Message);
+                return null;
             }
         }
 
@@ -225,15 +269,18 @@ namespace OfdToPdf
         {
             try
             {
-                var doc = new PdfDocument();
-                try
+                lock (EngineLock)
                 {
-                    doc.LoadFromFile(pdf);
-                    return doc.Pages.Count;
-                }
-                finally
-                {
-                    doc.Close();
+                    var doc = new PdfDocument();
+                    try
+                    {
+                        doc.LoadFromFile(pdf);
+                        return doc.Pages.Count;
+                    }
+                    finally
+                    {
+                        doc.Close();
+                    }
                 }
             }
             catch (Exception ex)

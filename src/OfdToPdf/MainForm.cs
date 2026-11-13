@@ -18,7 +18,7 @@ namespace OfdToPdf
     {
         private enum State { Waiting, Converting, Done, Skipped, Failed }
 
-        /// <summary>Everything we know about one file in the list (kept in ListViewItem.Tag).</summary>
+        /// <summary>Everything we know about one file in the list.</summary>
         private sealed class Row
         {
             public string FilePath;
@@ -27,31 +27,48 @@ namespace OfdToPdf
             public ConvertOutcome Outcome;  // last conversion result
         }
 
-        private static readonly Color Blue = Color.FromArgb(0, 95, 184);
-        private static readonly Color BlueHover = Color.FromArgb(0, 78, 152);
-        private static readonly Color Green = Color.FromArgb(16, 124, 16);
-        private static readonly Color Red = Color.FromArgb(196, 43, 28);
-        private static readonly Color Amber = Color.FromArgb(157, 93, 0);
+        /// <summary>An entry of the "save to" drop-down.</summary>
+        private sealed class Destination
+        {
+            public string Label;
+            public string Folder;   // null = next to the source file
+            public bool Browse;     // "choose a folder…"
+            public override string ToString() { return Label; }
+        }
 
-        private readonly MenuStrip menu = new MenuStrip();
-        private readonly ListView list = new ListView();
-        private readonly Label emptyState = new Label();
-        private readonly Button btnAdd = new Button();
-        private readonly Button btnAddFolder = new Button();
-        private readonly Button btnRemove = new Button();
-        private readonly Button btnClear = new Button();
-        private readonly Button btnConvert = new Button();
-        private readonly RadioButton rbSame = new RadioButton();
-        private readonly RadioButton rbFolder = new RadioButton();
-        private readonly TextBox txtOut = new TextBox();
-        private readonly Button btnBrowse = new Button();
+        // Header
+        private readonly ModernButton btnSettings = new ModernButton { Kind = ButtonKind.Subtle, IconGlyph = Theme.GlyphSettings };
+        private readonly ModernButton btnHelp = new ModernButton { Kind = ButtonKind.Subtle, IconGlyph = Theme.GlyphHelp };
+        // Files
+        private readonly DropZone drop = new DropZone();
+        private readonly Panel dropGap = new Panel();
+        private readonly Card listCard = new Card();
+        private readonly Label lblListTitle = new Label();
+        private readonly ModernButton btnRemove = new ModernButton { Kind = ButtonKind.Subtle, Text = "ลบที่เลือก" };
+        private readonly ModernButton btnClear = new ModernButton { Kind = ButtonKind.Subtle, Text = "ล้างรายการ" };
+        private readonly FileList list = new FileList();
+        // Preview
+        private readonly Card previewCard = new Card();
+        private readonly Label lblPreviewName = new Label();
+        private readonly Label lblPreviewNote = new Label();
+        private readonly PictureBox picture = new PictureBox();
+        private readonly Label lblPreviewEmpty = new Label();
+        private readonly ModernButton btnPrev = new ModernButton { Kind = ButtonKind.Subtle, IconGlyph = Theme.GlyphPrev };
+        private readonly ModernButton btnNext = new ModernButton { Kind = ButtonKind.Subtle, IconGlyph = Theme.GlyphNext };
+        private readonly Label lblPage = new Label();
+        private readonly ModernButton btnOpenPdf = new ModernButton { Text = "เปิด PDF", IconGlyph = Theme.GlyphOpen };
+        // Footer
+        private readonly ComboBox cmbDest = new ComboBox();
         private readonly ComboBox cmbConflict = new ComboBox();
-        private readonly CheckBox chkOpenWhenDone = new CheckBox();
-        private readonly StatusStrip statusStrip = new StatusStrip();
-        private readonly ToolStripStatusLabel statusLabel = new ToolStripStatusLabel();
-        private readonly ToolStripProgressBar progress = new ToolStripProgressBar();
-        private readonly ContextMenuStrip rowMenu = new ContextMenuStrip();
-        private ToolStripMenuItem miConvertMenu, miSendTo;
+        private readonly ModernButton btnConvert = new ModernButton { Kind = ButtonKind.Accent };
+        private readonly ThinProgress progress = new ThinProgress();
+        private readonly Label statusLabel = new Label();
+        // Menus
+        private readonly ContextMenuStrip settingsMenu = MenuColors.NewMenu();
+        private readonly ContextMenuStrip helpMenu = MenuColors.NewMenu();
+        private readonly ContextMenuStrip rowMenu = MenuColors.NewMenu();
+        private ToolStripMenuItem miOpenWhenDone, miSendTo;
+        private TableLayoutPanel footerTable;
 
         private readonly HashSet<string> known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly AppSettings settings;
@@ -59,7 +76,10 @@ namespace OfdToPdf
         private readonly string snapshotPath;
         private readonly float k; // DPI scale
         private CancellationTokenSource cts;
-        private bool busy, closeWhenDone;
+        private bool busy, closeWhenDone, suppressDestEvents;
+        private int destIndex;
+        private Row previewRow;
+        private int previewPage, previewPages, previewRequest;
 
         public MainForm(IEnumerable<string> initialFiles, bool autoStart, string snapshotPath)
         {
@@ -70,207 +90,316 @@ namespace OfdToPdf
 
             k = DeviceDpi / 96f;
             AutoScaleMode = AutoScaleMode.None; // fonts are in points already; pixel sizes use k
-            Font = new Font("Segoe UI", 9f);
-            Text = "OFD → PDF Converter " + VersionText();
+            Font = Theme.Body;
+            BackColor = Theme.Window;
+            ForeColor = Theme.Text;
+            Text = "OFD → PDF Converter";
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
-            MinimumSize = Px(720, 480);
+            MinimumSize = Px(900, 600);
             Size = settings.WindowWidth > 0
                 ? new Size(Math.Max(settings.WindowWidth, MinimumSize.Width), Math.Max(settings.WindowHeight, MinimumSize.Height))
-                : Px(900, 600);
+                : Px(1060, 700);
             StartPosition = FormStartPosition.CenterScreen;
+            AllowDrop = true;
 
             SuspendLayout();
-            BuildMenu();
-            BuildUi();
+            BuildMenus();
+            BuildLayout();
             ApplySettings();
             ResumeLayout(true);
 
             AddFiles(initialFiles ?? Enumerable.Empty<string>());
             UpdateUi();
+            ShowPreviewPlaceholder();
 
             Shown += OnShown;
             FormClosing += OnFormClosing;
+            DragEnter += (s, e) => e.Effect = !busy && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            DragDrop += (s, e) => { var f = e.Data.GetData(DataFormats.FileDrop) as string[]; if (f != null && !busy) AddFiles(f); };
         }
+
+        private int Px(int v) { return (int)Math.Round(v * k); }
+        private Size Px(int w, int h) { return new Size(Px(w), Px(h)); }
 
         // ---- layout ----------------------------------------------------------------------
 
-        private void BuildMenu()
+        private void BuildLayout()
         {
-            var file = new ToolStripMenuItem("ไฟล์");
-            file.DropDownItems.Add(Item("เพิ่มไฟล์…", Keys.Control | Keys.O, (s, e) => AddFilesDialog()));
-            file.DropDownItems.Add(Item("เพิ่มโฟลเดอร์…", Keys.Control | Keys.Shift | Keys.O, (s, e) => AddFolderDialog()));
-            file.DropDownItems.Add(new ToolStripSeparator());
-            miConvertMenu = Item("แปลงเป็น PDF", Keys.F5, (s, e) => OnConvertClicked());
-            file.DropDownItems.Add(miConvertMenu);
-            file.DropDownItems.Add(new ToolStripSeparator());
-            var exit = Item("ออก", Keys.None, (s, e) => Close());
-            exit.ShortcutKeyDisplayString = "Alt+F4";
-            file.DropDownItems.Add(exit);
-
-            var tools = new ToolStripMenuItem("เครื่องมือ");
-            tools.DropDownItems.Add(Item("เปิดโฟลเดอร์ฟอนต์เพิ่มเติม", Keys.None, (s, e) => OpenFontsFolder()));
-            tools.DropDownItems.Add(Item("เปิดไฟล์บันทึกการทำงาน (log)", Keys.None, (s, e) => OpenLog()));
-            tools.DropDownItems.Add(new ToolStripSeparator());
-            miSendTo = Item("เพิ่มในเมนู \"ส่งไปยัง\" (Send to) ของ Windows", Keys.None, (s, e) => ToggleSendTo());
-            tools.DropDownItems.Add(miSendTo);
-            tools.DropDownOpening += (s, e) => miSendTo.Checked = File.Exists(SendToShortcut());
-
-            var help = new ToolStripMenuItem("ช่วยเหลือ");
-            help.DropDownItems.Add(Item("วิธีใช้", Keys.F1, (s, e) => ShowHelp()));
-            help.DropDownItems.Add(Item("เกี่ยวกับโปรแกรม", Keys.None, (s, e) => ShowAbout()));
-
-            menu.Items.AddRange(new ToolStripItem[] { file, tools, help });
-            MainMenuStrip = menu;
-        }
-
-        private static ToolStripMenuItem Item(string text, Keys keys, EventHandler click)
-        {
-            var mi = new ToolStripMenuItem(text, null, click);
-            if (keys != Keys.None) mi.ShortcutKeys = keys;
-            return mi;
-        }
-
-        private void BuildUi()
-        {
-            // Toolbar: list actions on the left, the one primary action on the right.
-            var toolbar = new TableLayoutPanel
+            var root = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                ColumnCount = 2,
-                RowCount = 1,
-                Padding = new Padding(Px(8), Px(8), Px(8), Px(6)),
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                Padding = new Padding(Px(16), Px(8), Px(16), Px(16)),
+                BackColor = Theme.Window,
             };
-            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            var left = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill, Margin = Padding.Empty };
-            SetupButton(btnAdd, "＋  เพิ่มไฟล์…", (s, e) => AddFilesDialog());
-            SetupButton(btnAddFolder, "＋  เพิ่มโฟลเดอร์…", (s, e) => AddFolderDialog());
-            SetupButton(btnRemove, "ลบที่เลือก", (s, e) => RemoveSelected());
-            SetupButton(btnClear, "ล้างรายการ", (s, e) => ClearList());
-            left.Controls.AddRange(new Control[] { btnAdd, btnAddFolder, btnRemove, btnClear });
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.Controls.Add(BuildHeader(), 0, 0);
+            root.Controls.Add(BuildBody(), 0, 1);
+            var footer = BuildFooter();
+            root.Controls.Add(footer, 0, 2);
+            Controls.Add(root);
+            // Size the footer row from its content (Panel.AutoSize is unreliable with docked children).
+            root.RowStyles[2] = new RowStyle(SizeType.Absolute,
+                footerTable.GetPreferredSize(new Size(Px(900), 0)).Height + footer.Padding.Vertical + footer.Margin.Vertical + Px(2));
+        }
 
-            SetupButton(btnConvert, "▶  แปลงเป็น PDF", (s, e) => OnConvertClicked());
-            btnConvert.Font = new Font(Font.FontFamily, 10f, FontStyle.Bold);
-            btnConvert.FlatStyle = FlatStyle.Flat;
-            btnConvert.FlatAppearance.BorderSize = 0;
-            btnConvert.BackColor = Blue;
-            btnConvert.FlatAppearance.MouseOverBackColor = BlueHover;
-            btnConvert.ForeColor = Color.White;
-            btnConvert.Padding = new Padding(Px(14), Px(4), Px(14), Px(4));
-            btnConvert.Anchor = AnchorStyles.Right;
-            toolbar.Controls.Add(left, 0, 0);
-            toolbar.Controls.Add(btnConvert, 1, 0);
+        private Control BuildHeader()
+        {
+            var header = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 4, Margin = new Padding(0, 0, 0, Px(10)) };
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            // File list, with an empty state that doubles as a drop zone.
-            var listHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(Px(8), 0, Px(8), Px(4)) };
+            var logo = new PictureBox { Size = Px(36, 36), SizeMode = PictureBoxSizeMode.Zoom, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, Px(10), 0) };
+            try { logo.Image = new Icon(Icon, Px(48, 48)).ToBitmap(); } catch (Exception) { }
+
+            var titles = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Left, Margin = Padding.Empty };
+            titles.Controls.Add(new Label { Text = "OFD → PDF Converter", Font = Theme.Title, AutoSize = true, Margin = Padding.Empty });
+            titles.Controls.Add(new Label { Text = "แปลงไฟล์ OFD เป็น PDF · เวอร์ชัน " + VersionText(), Font = Theme.Caption, ForeColor = Theme.TextSecondary, AutoSize = true, Margin = Padding.Empty });
+
+            var tips = new ToolTip();
+            tips.SetToolTip(btnSettings, "ตั้งค่าและเครื่องมือ");
+            tips.SetToolTip(btnHelp, "วิธีใช้ (F1)");
+            btnSettings.Anchor = btnHelp.Anchor = AnchorStyles.Right;
+            btnSettings.Padding = btnHelp.Padding = new Padding(Px(8));
+            btnSettings.Click += (s, e) => settingsMenu.Show(btnSettings, new Point(btnSettings.Width - settingsMenu.Width, btnSettings.Height));
+            btnHelp.Click += (s, e) => helpMenu.Show(btnHelp, new Point(btnHelp.Width - helpMenu.Width, btnHelp.Height));
+
+            header.Controls.Add(logo, 0, 0);
+            header.Controls.Add(titles, 1, 0);
+            header.Controls.Add(btnSettings, 2, 0);
+            header.Controls.Add(btnHelp, 3, 0);
+            return header;
+        }
+
+        private Control BuildBody()
+        {
+            var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60f));
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40f));
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+
+            // Left: drop zone + file list.
+            var left = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, Px(6), 0) };
+            drop.Dock = DockStyle.Fill;
+            drop.CanDrop = () => !busy;
+            drop.FilesDropped += files => AddFiles(files);
+            drop.BtnFiles.Padding = drop.BtnFolder.Padding = new Padding(Px(14), Px(6), Px(14), Px(6));
+            drop.BtnFiles.Click += (s, e) => AddFilesDialog();
+            drop.BtnFolder.Click += (s, e) => AddFolderDialog();
+            dropGap.Dock = DockStyle.Top;
+            dropGap.Height = Px(10);
+
+            listCard.Dock = DockStyle.Fill;
+            listCard.Padding = new Padding(Px(6), Px(8), Px(6), Px(8));
+            var listLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, BackColor = Theme.Card };
+            listLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            listLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            listLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            listLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            listLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            lblListTitle.Font = Theme.Subheading;
+            lblListTitle.AutoSize = true;
+            lblListTitle.Anchor = AnchorStyles.Left;
+            lblListTitle.Margin = new Padding(Px(10), 0, 0, 0);
+            btnRemove.Padding = btnClear.Padding = new Padding(Px(10), Px(4), Px(10), Px(4));
+            btnRemove.Click += (s, e) => RemoveSelected();
+            btnClear.Click += (s, e) => ClearList();
             list.Dock = DockStyle.Fill;
-            list.View = View.Details;
-            list.FullRowSelect = true;
-            list.HideSelection = false;
-            list.ShowItemToolTips = true;
+            list.Margin = new Padding(0, Px(4), 0, 0);
+            list.Describe = o => Describe((Row)o);
             list.AllowDrop = true;
-            list.Columns.Add("ไฟล์", Px(250));
-            list.Columns.Add("หน้า", Px(55), HorizontalAlignment.Right);
-            list.Columns.Add("สถานะ", Px(110));
-            list.Columns.Add("รายละเอียด", Px(400));
-            list.DragEnter += OnDragEnter;
-            list.DragDrop += OnDragDrop;
-            list.KeyDown += OnListKeyDown;
+            list.DragEnter += (s, e) => e.Effect = !busy && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            list.DragDrop += (s, e) => { var f = e.Data.GetData(DataFormats.FileDrop) as string[]; if (f != null && !busy) AddFiles(f); };
+            list.SelectedIndexChanged += (s, e) => { UpdateUi(keepStatus: true); ShowPreview(); };
             list.DoubleClick += (s, e) => OpenSelectedPdf();
-            list.SelectedIndexChanged += (s, e) => UpdateUi(keepStatus: true);
-            list.Resize += (s, e) => FitLastColumn();
+            list.KeyDown += OnListKeyDown;
             list.ContextMenuStrip = rowMenu;
-            BuildRowMenu();
+            list.MoreClicked += (i, p) => rowMenu.Show(list, p);
+            listLayout.Controls.Add(lblListTitle, 0, 0);
+            listLayout.Controls.Add(btnRemove, 1, 0);
+            listLayout.Controls.Add(btnClear, 2, 0);
+            listLayout.Controls.Add(list, 0, 1);
+            listLayout.SetColumnSpan(list, 3);
+            listCard.Controls.Add(listLayout);
 
-            emptyState.Dock = DockStyle.Fill;
-            emptyState.TextAlign = ContentAlignment.MiddleCenter;
-            emptyState.Font = new Font(Font.FontFamily, 11f);
-            emptyState.ForeColor = SystemColors.GrayText;
-            emptyState.BackColor = SystemColors.Window;
-            emptyState.BorderStyle = BorderStyle.FixedSingle;
-            emptyState.Text = "ลากไฟล์ .ofd หรือโฟลเดอร์มาวางที่นี่\n\nหรือคลิกเพื่อเลือกไฟล์";
-            emptyState.Cursor = Cursors.Hand;
-            emptyState.AllowDrop = true;
-            emptyState.Click += (s, e) => AddFilesDialog();
-            emptyState.DragEnter += OnDragEnter;
-            emptyState.DragDrop += OnDragDrop;
-            listHost.Controls.Add(list);
-            listHost.Controls.Add(emptyState);
-            emptyState.BringToFront();
+            // Docking: last added is laid out first.
+            left.Controls.Add(listCard);
+            left.Controls.Add(dropGap);
+            left.Controls.Add(drop);
 
-            // Where to save.
-            var options = new TableLayoutPanel
-            {
-                Dock = DockStyle.Bottom,
-                AutoSize = true,
-                ColumnCount = 3,
-                Padding = new Padding(Px(8), Px(4), Px(8), Px(8)),
-            };
-            options.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            options.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            // Right: preview.
+            previewCard.Dock = DockStyle.Fill;
+            previewCard.Margin = new Padding(Px(6), 0, 0, 0);
+            previewCard.Padding = new Padding(Px(14), Px(12), Px(14), Px(12));
+            var pv = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 4, BackColor = Theme.Card };
+            pv.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            pv.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            pv.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            pv.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            pv.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            pv.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            pv.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            pv.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            pv.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            var title = new Label { Text = "บันทึก PDF", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 3) };
-            rbSame.Text = "ไว้โฟลเดอร์เดียวกับไฟล์ต้นฉบับ";
-            rbSame.AutoSize = true;
-            rbFolder.Text = "ไว้ในโฟลเดอร์:";
-            rbFolder.AutoSize = true;
-            rbSame.CheckedChanged += (s, e) => UpdateUi(keepStatus: true);
-            txtOut.Dock = DockStyle.Fill;
-            txtOut.Margin = new Padding(3, Px(4), 3, 3);
-            SetupButton(btnBrowse, "เลือก…", (s, e) => BrowseOutput());
-            var lblConflict = new Label { Text = "ถ้ามี PDF ชื่อเดียวกันอยู่แล้ว:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, Px(6), 3, 3) };
-            cmbConflict.DropDownStyle = ComboBoxStyle.DropDownList;
-            cmbConflict.Items.AddRange(new object[] { "สร้างชื่อใหม่ เช่น file (1).pdf", "เขียนทับไฟล์เดิม", "ข้ามไฟล์นั้น" });
-            cmbConflict.Width = Px(260);
-            cmbConflict.Anchor = AnchorStyles.Left;
-            chkOpenWhenDone.Text = "เปิดโฟลเดอร์ผลลัพธ์เมื่อแปลงเสร็จ";
-            chkOpenWhenDone.AutoSize = true;
+            var lblPreviewTitle = new Label { Text = "ตัวอย่าง PDF", Font = Theme.Subheading, AutoSize = true, Margin = Padding.Empty };
+            lblPreviewName.AutoSize = false;
+            lblPreviewName.Dock = DockStyle.Fill;
+            lblPreviewName.Height = Px(22);
+            lblPreviewName.AutoEllipsis = true;
+            lblPreviewName.ForeColor = Theme.TextSecondary;
+            lblPreviewName.Font = Theme.Caption;
+            lblPreviewName.Margin = new Padding(0, Px(2), 0, 0);
+            lblPreviewNote.AutoSize = false;
+            lblPreviewNote.Dock = DockStyle.Fill;
+            lblPreviewNote.Height = Px(20);
+            lblPreviewNote.AutoEllipsis = true;
+            lblPreviewNote.Font = Theme.Caption;
+            lblPreviewNote.ForeColor = Theme.Warning;
+            lblPreviewNote.Margin = Padding.Empty;
 
-            options.Controls.Add(title, 0, 0);
-            options.SetColumnSpan(title, 3);
-            options.Controls.Add(rbSame, 0, 1);
-            options.SetColumnSpan(rbSame, 3);
-            options.Controls.Add(rbFolder, 0, 2);
-            options.Controls.Add(txtOut, 1, 2);
-            options.Controls.Add(btnBrowse, 2, 2);
-            options.Controls.Add(lblConflict, 0, 3);
-            options.Controls.Add(cmbConflict, 1, 3);
-            options.SetColumnSpan(cmbConflict, 2);
-            options.Controls.Add(chkOpenWhenDone, 0, 4);
-            options.SetColumnSpan(chkOpenWhenDone, 3);
+            var stage = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Subtle, Margin = new Padding(0, Px(8), 0, Px(8)), Padding = new Padding(Px(8)) };
+            picture.Dock = DockStyle.Fill;
+            picture.SizeMode = PictureBoxSizeMode.Zoom;
+            picture.BackColor = Theme.Subtle;
+            picture.Cursor = Cursors.Hand;
+            picture.DoubleClick += (s, e) => OpenSelectedPdf();
+            lblPreviewEmpty.Dock = DockStyle.Fill;
+            lblPreviewEmpty.TextAlign = ContentAlignment.MiddleCenter;
+            lblPreviewEmpty.ForeColor = Theme.TextSecondary;
+            lblPreviewEmpty.BackColor = Theme.Subtle;
+            stage.Controls.Add(picture);
+            stage.Controls.Add(lblPreviewEmpty);
 
-            statusLabel.Spring = true;
-            statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-            progress.Size = Px(220, 16);
-            progress.Visible = false;
-            statusStrip.Items.AddRange(new ToolStripItem[] { statusLabel, progress });
-            statusStrip.SizingGrip = true;
+            btnPrev.Padding = btnNext.Padding = new Padding(Px(6));
+            btnPrev.Click += (s, e) => { if (previewPage > 0) { previewPage--; ShowPreview(); } };
+            btnNext.Click += (s, e) => { if (previewPage < previewPages - 1) { previewPage++; ShowPreview(); } };
+            lblPage.AutoSize = true;
+            lblPage.Anchor = AnchorStyles.Left;
+            lblPage.ForeColor = Theme.TextSecondary;
+            lblPage.Margin = new Padding(Px(4), 0, Px(4), 0);
+            btnOpenPdf.Padding = new Padding(Px(12), Px(4), Px(12), Px(4));
+            btnOpenPdf.Anchor = AnchorStyles.Right;
+            btnOpenPdf.Click += (s, e) => OpenSelectedPdf();
 
-            // Docking: the last control added is laid out first (outermost).
-            Controls.Add(listHost);
-            Controls.Add(options);
-            Controls.Add(statusStrip);
-            Controls.Add(toolbar);
-            Controls.Add(menu);
+            pv.Controls.Add(lblPreviewTitle, 0, 0);
+            pv.SetColumnSpan(lblPreviewTitle, 5);
+            pv.Controls.Add(lblPreviewName, 0, 1);
+            pv.SetColumnSpan(lblPreviewName, 5);
+            var notes = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, AutoSize = true, Margin = Padding.Empty };
+            notes.Controls.Add(lblPreviewNote, 0, 0);
+            notes.Controls.Add(stage, 0, 1);
+            notes.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            notes.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            notes.AutoSize = false;
+            pv.Controls.Add(notes, 0, 2);
+            pv.SetColumnSpan(notes, 5);
+            pv.Controls.Add(btnPrev, 0, 3);
+            pv.Controls.Add(lblPage, 1, 3);
+            pv.Controls.Add(btnNext, 2, 3);
+            pv.Controls.Add(btnOpenPdf, 4, 3);
+            previewCard.Controls.Add(pv);
 
-            AllowDrop = true;
-            DragEnter += OnDragEnter;
-            DragDrop += OnDragDrop;
+            body.Controls.Add(left, 0, 0);
+            body.Controls.Add(previewCard, 1, 0);
+            return body;
         }
 
-        private void BuildRowMenu()
+        private Control BuildFooter()
         {
+            var footer = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, Px(12), 0, 0), Padding = new Padding(Px(16), Px(12), Px(16), Px(12)) };
+            var t = footerTable = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 6, RowCount = 3, BackColor = Theme.Card };
+            t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowStyles.Add(new RowStyle(SizeType.Absolute, Px(10))); // progress row is always reserved
+            for (int i = 0; i < 4; i++) t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+            var lblDest = new Label { Text = "บันทึก PDF ที่", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, Px(6), 0) };
+            cmbDest.DropDownStyle = ComboBoxStyle.DropDownList;
+            cmbDest.FlatStyle = FlatStyle.System;
+            cmbDest.Width = Px(260);
+            cmbDest.Anchor = AnchorStyles.Left;
+            cmbDest.Margin = new Padding(0, 0, Px(18), 0);
+            cmbDest.SelectedIndexChanged += OnDestinationChanged;
+            var lblConflict = new Label { Text = "ถ้ามีไฟล์ชื่อเดียวกัน", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, Px(6), 0) };
+            cmbConflict.DropDownStyle = ComboBoxStyle.DropDownList;
+            cmbConflict.FlatStyle = FlatStyle.System;
+            cmbConflict.Items.AddRange(new object[] { "สร้างชื่อใหม่ (file (1).pdf)", "เขียนทับไฟล์เดิม", "ข้ามไฟล์นั้น" });
+            cmbConflict.Width = Px(200);
+            cmbConflict.Anchor = AnchorStyles.Left;
+
+            btnConvert.Font = new Font("Segoe UI Semibold", 11f);
+            btnConvert.Padding = new Padding(Px(22), Px(8), Px(22), Px(8));
+            btnConvert.MinimumSize = new Size(Px(170), 0);
+            btnConvert.Anchor = AnchorStyles.Right;
+            btnConvert.Click += (s, e) => OnConvertClicked();
+
+            statusLabel.AutoSize = false;
+            statusLabel.Dock = DockStyle.Fill;
+            statusLabel.Height = Px(22);
+            statusLabel.AutoEllipsis = true;
+            statusLabel.ForeColor = Theme.TextSecondary;
+            statusLabel.Font = Theme.Caption;
+            statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+            statusLabel.Margin = new Padding(0, Px(8), 0, 0);
+            progress.Dock = DockStyle.Fill;
+            progress.Height = Px(4);
+            progress.Margin = new Padding(0, Px(4), Px(18), 0);
+            progress.Visible = false;
+
+            t.Controls.Add(lblDest, 0, 0);
+            t.Controls.Add(cmbDest, 1, 0);
+            t.Controls.Add(lblConflict, 2, 0);
+            t.Controls.Add(cmbConflict, 3, 0);
+            t.Controls.Add(btnConvert, 5, 0);
+            t.SetRowSpan(btnConvert, 3);
+            t.Controls.Add(statusLabel, 0, 1);
+            t.SetColumnSpan(statusLabel, 5);
+            t.Controls.Add(progress, 0, 2);
+            t.SetColumnSpan(progress, 5);
+            footer.Controls.Add(t);
+            return footer;
+        }
+
+        private void BuildMenus()
+        {
+            miOpenWhenDone = new ToolStripMenuItem("เปิดโฟลเดอร์ผลลัพธ์เมื่อแปลงเสร็จ") { CheckOnClick = true };
+            miSendTo = new ToolStripMenuItem("เพิ่มในเมนู \"ส่งไปยัง\" (Send to) ของ Windows", null, (s, e) => ToggleSendTo());
+            settingsMenu.Items.AddRange(new ToolStripItem[]
+            {
+                miOpenWhenDone,
+                new ToolStripSeparator(),
+                new ToolStripMenuItem("เปิดโฟลเดอร์ฟอนต์เพิ่มเติม", null, (s, e) => OpenFontsFolder()),
+                new ToolStripMenuItem("เปิดบันทึกการทำงาน (log)", null, (s, e) => OpenLog()),
+                new ToolStripSeparator(),
+                miSendTo,
+            });
+            settingsMenu.Opening += (s, e) => miSendTo.Checked = File.Exists(SendToShortcut());
+
+            helpMenu.Items.AddRange(new ToolStripItem[]
+            {
+                new ToolStripMenuItem("วิธีใช้", null, (s, e) => ShowHelp()) { ShortcutKeyDisplayString = "F1" },
+                new ToolStripMenuItem("ทางลัดแป้นพิมพ์", null, (s, e) => ShowShortcuts()),
+                new ToolStripSeparator(),
+                new ToolStripMenuItem("เกี่ยวกับโปรแกรม", null, (s, e) => ShowAbout()),
+            });
+
             var open = new ToolStripMenuItem("เปิด PDF", null, (s, e) => OpenSelectedPdf()) { ShortcutKeyDisplayString = "Enter" };
             var reveal = new ToolStripMenuItem("แสดงในโฟลเดอร์", null, (s, e) => RevealSelected());
-            var again = new ToolStripMenuItem("แปลงไฟล์ที่เลือก", null, (s, e) => StartConvert(SelectedItems()));
+            var again = new ToolStripMenuItem("แปลงไฟล์ที่เลือก", null, (s, e) => StartConvert(SelectedRows()));
             var copy = new ToolStripMenuItem("คัดลอกรายละเอียด", null, (s, e) => CopySelectedDetails()) { ShortcutKeyDisplayString = "Ctrl+C" };
             var remove = new ToolStripMenuItem("ลบออกจากรายการ", null, (s, e) => RemoveSelected()) { ShortcutKeyDisplayString = "Del" };
             rowMenu.Items.AddRange(new ToolStripItem[] { open, reveal, new ToolStripSeparator(), again, copy, new ToolStripSeparator(), remove });
             rowMenu.Opening += (s, e) =>
             {
-                var rows = SelectedItems().Select(RowOf).ToList();
+                var rows = SelectedRows();
                 if (rows.Count == 0) { e.Cancel = true; return; }
                 open.Enabled = rows.Count == 1 && HasPdf(rows[0]);
                 reveal.Enabled = rows.Count == 1;
@@ -278,54 +407,83 @@ namespace OfdToPdf
             };
         }
 
-        private void SetupButton(Button b, string text, EventHandler click)
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            b.Text = text;
-            b.AutoSize = true;
-            b.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            b.Padding = new Padding(Px(6), Px(2), Px(6), Px(2));
-            b.Click += click;
+            switch (keyData)
+            {
+                case Keys.Control | Keys.O: AddFilesDialog(); return true;
+                case Keys.Control | Keys.Shift | Keys.O: AddFolderDialog(); return true;
+                case Keys.F5: OnConvertClicked(); return true;
+                case Keys.F1: ShowHelp(); return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
-
-        private void FitLastColumn()
-        {
-            if (list.Columns.Count < 4) return;
-            int used = list.Columns[0].Width + list.Columns[1].Width + list.Columns[2].Width;
-            int w = list.ClientSize.Width - used - 2;
-            if (w > Px(120)) list.Columns[3].Width = w;
-        }
-
-        private int Px(int v) { return (int)Math.Round(v * k); }
-        private Size Px(int w, int h) { return new Size(Px(w), Px(h)); }
 
         // ---- settings --------------------------------------------------------------------
 
         private void ApplySettings()
         {
-            rbSame.Checked = settings.SaveNextToSource;
-            rbFolder.Checked = !settings.SaveNextToSource;
-            txtOut.Text = settings.OutputDir;
+            FillDestinations(settings.OutputDir, settings.SaveNextToSource ? null : settings.OutputDir);
             cmbConflict.SelectedIndex = (int)settings.Conflict;
-            chkOpenWhenDone.Checked = settings.OpenFolderWhenDone;
+            miOpenWhenDone.Checked = settings.OpenFolderWhenDone;
         }
 
-        private void CaptureSettings()
+        private void FillDestinations(string folder, string select)
         {
-            settings.SaveNextToSource = rbSame.Checked;
-            settings.OutputDir = txtOut.Text.Trim();
-            settings.Conflict = (ConflictMode)Math.Max(0, cmbConflict.SelectedIndex);
-            settings.OpenFolderWhenDone = chkOpenWhenDone.Checked;
-            if (WindowState == FormWindowState.Normal)
+            suppressDestEvents = true;
+            cmbDest.Items.Clear();
+            cmbDest.Items.Add(new Destination { Label = "โฟลเดอร์เดียวกับไฟล์ต้นฉบับ" });
+            if (!string.IsNullOrEmpty(folder)) cmbDest.Items.Add(new Destination { Label = folder, Folder = folder });
+            cmbDest.Items.Add(new Destination { Label = "เลือกโฟลเดอร์อื่น…", Browse = true });
+            cmbDest.SelectedIndex = !string.IsNullOrEmpty(select) && !string.IsNullOrEmpty(folder) ? 1 : 0;
+            destIndex = cmbDest.SelectedIndex;
+            suppressDestEvents = false;
+        }
+
+        private void OnDestinationChanged(object sender, EventArgs e)
+        {
+            if (suppressDestEvents) return;
+            var d = cmbDest.SelectedItem as Destination;
+            if (d == null || !d.Browse)
             {
-                settings.WindowWidth = Width;
-                settings.WindowHeight = Height;
+                destIndex = cmbDest.SelectedIndex;
+                return;
             }
+            using (var dlg = new FolderBrowserDialog { Description = "เลือกโฟลเดอร์สำหรับเก็บไฟล์ PDF" })
+            {
+                var current = CurrentFolder();
+                if (current != null && Directory.Exists(current)) dlg.SelectedPath = current;
+                if (dlg.ShowDialog(this) == DialogResult.OK)
+                    FillDestinations(dlg.SelectedPath, dlg.SelectedPath);
+                else
+                {
+                    suppressDestEvents = true;
+                    cmbDest.SelectedIndex = destIndex;
+                    suppressDestEvents = false;
+                }
+            }
+        }
+
+        /// <summary>The chosen output folder, or null for "next to the source file".</summary>
+        private string CurrentFolder()
+        {
+            var d = cmbDest.SelectedItem as Destination;
+            return d == null ? null : d.Folder;
         }
 
         private void SaveSettings()
         {
             if (snapshotPath != null) return;
-            CaptureSettings();
+            string folder = cmbDest.Items.OfType<Destination>().Select(d => d.Folder).FirstOrDefault(f => f != null);
+            settings.SaveNextToSource = CurrentFolder() == null;
+            settings.OutputDir = folder ?? "";
+            settings.Conflict = (ConflictMode)Math.Max(0, cmbConflict.SelectedIndex);
+            settings.OpenFolderWhenDone = miOpenWhenDone.Checked;
+            if (WindowState == FormWindowState.Normal)
+            {
+                settings.WindowWidth = Width;
+                settings.WindowHeight = Height;
+            }
             settings.Save();
         }
 
@@ -333,38 +491,43 @@ namespace OfdToPdf
 
         private void AddFiles(IEnumerable<string> paths)
         {
-            var added = new List<ListViewItem>();
+            var added = new List<Row>();
             int ignored = 0;
             list.BeginUpdate();
             foreach (string full in Program.ExpandInputs(paths))
             {
                 if (!full.EndsWith(".ofd", StringComparison.OrdinalIgnoreCase) || !File.Exists(full)) { ignored++; continue; }
                 if (!known.Add(full)) continue;
-                var it = new ListViewItem(new[] { "", "", "", "" }) { Tag = new Row { FilePath = full }, UseItemStyleForSubItems = false };
-                list.Items.Add(it);
-                Render(it);
-                added.Add(it);
+                var row = new Row { FilePath = full };
+                list.Items.Add(row);
+                added.Add(row);
             }
             list.EndUpdate();
             UpdateUi();
             if (ignored > 0 && added.Count == 0)
-                statusLabel.Text = "ไม่มีไฟล์ .ofd ในสิ่งที่เพิ่มเข้ามา";
+                SetStatus("ไม่มีไฟล์ .ofd ในสิ่งที่เพิ่มเข้ามา");
             else if (added.Count > 0)
-                statusLabel.Text = string.Format("เพิ่ม {0} ไฟล์ — กด \"แปลงเป็น PDF\" เมื่อพร้อม", added.Count);
+                SetStatus(string.Format("เพิ่ม {0} ไฟล์ — กด \"แปลง\" เมื่อพร้อม (F5)", added.Count));
             ScanAsync(added);
         }
 
         /// <summary>Reads page count / signatures / validity in the background so the list can warn early.</summary>
-        private async void ScanAsync(List<ListViewItem> items)
+        private async void ScanAsync(List<Row> rows)
         {
-            foreach (var it in items)
+            foreach (var row in rows)
             {
-                var row = RowOf(it);
                 string path = row.FilePath;
                 var info = await Task.Run(() => OfdInfo.Inspect(path));
                 if (row.Info == null) row.Info = info; // a finished conversion may already have set it
-                if (it.ListView != null) Render(it);
+                RefreshRow(row);
             }
+        }
+
+        private void RefreshRow(Row row)
+        {
+            list.RefreshItem(row);
+            if (row == previewRow) ShowPreview();
+            UpdateUi(keepStatus: true);
         }
 
         private void AddFilesDialog()
@@ -384,14 +547,17 @@ namespace OfdToPdf
         private void RemoveSelected()
         {
             if (busy) return;
+            var rows = SelectedRows();
+            if (rows.Count == 0) return;
             list.BeginUpdate();
-            foreach (ListViewItem it in SelectedItems())
+            foreach (var row in rows)
             {
-                known.Remove(RowOf(it).FilePath);
-                list.Items.Remove(it);
+                known.Remove(row.FilePath);
+                list.Items.Remove(row);
             }
             list.EndUpdate();
             UpdateUi();
+            ShowPreview();
         }
 
         private void ClearList()
@@ -400,31 +566,7 @@ namespace OfdToPdf
             known.Clear();
             list.Items.Clear();
             UpdateUi();
-        }
-
-        private void BrowseOutput()
-        {
-            using (var d = new FolderBrowserDialog { Description = "เลือกโฟลเดอร์สำหรับเก็บไฟล์ PDF" })
-            {
-                if (Directory.Exists(txtOut.Text)) d.SelectedPath = txtOut.Text;
-                if (d.ShowDialog(this) == DialogResult.OK)
-                {
-                    txtOut.Text = d.SelectedPath;
-                    rbFolder.Checked = true;
-                }
-            }
-        }
-
-        private void OnDragEnter(object sender, DragEventArgs e)
-        {
-            e.Effect = !busy && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
-        }
-
-        private void OnDragDrop(object sender, DragEventArgs e)
-        {
-            if (busy) return;
-            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
-            if (files != null) AddFiles(files);
+            ShowPreview();
         }
 
         private void OnListKeyDown(object sender, KeyEventArgs e)
@@ -434,23 +576,31 @@ namespace OfdToPdf
             else if (e.Control && e.KeyCode == Keys.A)
             {
                 list.BeginUpdate();
-                foreach (ListViewItem it in list.Items) it.Selected = true;
+                for (int i = 0; i < list.Items.Count; i++) list.SetSelected(i, true);
                 list.EndUpdate();
                 e.Handled = true;
             }
             else if (e.Control && e.KeyCode == Keys.C) { CopySelectedDetails(); e.Handled = true; }
         }
 
-        private List<ListViewItem> SelectedItems()
+        private List<Row> SelectedRows()
         {
-            return list.SelectedItems.Cast<ListViewItem>().ToList();
+            return list.SelectedItems.Cast<Row>().ToList();
         }
 
-        private static Row RowOf(ListViewItem it) { return (Row)it.Tag; }
+        private List<Row> AllRows()
+        {
+            return list.Items.Cast<Row>().ToList();
+        }
 
         private static bool HasPdf(Row row)
         {
             return row.State == State.Done && row.Outcome != null && File.Exists(row.Outcome.OutputPath);
+        }
+
+        private List<Row> PendingRows()
+        {
+            return AllRows().Where(r => r.State != State.Done && r.State != State.Skipped).ToList();
         }
 
         // ---- conversion ------------------------------------------------------------------
@@ -461,15 +611,13 @@ namespace OfdToPdf
             {
                 cts.Cancel();
                 btnConvert.Enabled = false;
-                statusLabel.Text = "กำลังยกเลิก… รอให้ไฟล์ปัจจุบันเสร็จก่อน";
+                SetStatus("กำลังหยุด… รอให้ไฟล์ปัจจุบันเสร็จก่อน");
                 return;
             }
-            // Files already converted or skipped are not redone unless chosen via "แปลงไฟล์ที่เลือก".
-            var todo = list.Items.Cast<ListViewItem>()
-                .Where(i => RowOf(i).State != State.Done && RowOf(i).State != State.Skipped).ToList();
+            if (list.Items.Count == 0) { AddFilesDialog(); return; }
+            var todo = PendingRows();
             if (todo.Count == 0)
             {
-                if (list.Items.Count == 0) { AddFilesDialog(); return; }
                 Notify("ทุกไฟล์ในรายการแปลงเสร็จแล้ว\nถ้าต้องการแปลงซ้ำ ให้คลิกขวาที่ไฟล์แล้วเลือก \"แปลงไฟล์ที่เลือก\"", MessageBoxIcon.Information);
                 return;
             }
@@ -479,15 +627,8 @@ namespace OfdToPdf
         private string ResolveOutputDir(out bool ok)
         {
             ok = true;
-            if (rbSame.Checked) return null;
-            string dir = txtOut.Text.Trim();
-            if (dir.Length == 0)
-            {
-                Notify("กรุณาเลือกโฟลเดอร์สำหรับเก็บไฟล์ PDF", MessageBoxIcon.Warning);
-                txtOut.Focus();
-                ok = false;
-                return null;
-            }
+            string dir = CurrentFolder();
+            if (dir == null) return null;
             if (!Directory.Exists(dir))
             {
                 if (snapshotPath == null && MessageBox.Show(this, "ไม่มีโฟลเดอร์นี้:\n" + dir + "\n\nสร้างใหม่ไหม?", Text,
@@ -507,9 +648,9 @@ namespace OfdToPdf
             return dir;
         }
 
-        private async void StartConvert(List<ListViewItem> items)
+        private async void StartConvert(List<Row> rows)
         {
-            if (busy || items.Count == 0) return;
+            if (busy || rows.Count == 0) return;
             bool ok;
             string outDir = ResolveOutputDir(out ok);
             if (!ok) return;
@@ -519,34 +660,34 @@ namespace OfdToPdf
             cts = new CancellationTokenSource();
             var token = cts.Token;
             busy = true;
-            progress.Maximum = items.Count;
+            progress.Maximum = rows.Count;
             progress.Value = 0;
             progress.Visible = true;
             UpdateUi();
-            statusLabel.Text = "กำลังเตรียม…";
+            SetStatus("กำลังเตรียม…");
 
             await Task.Run(() => Converter.RefreshFonts()); // pick up fonts added since last time
             var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var done = new List<Row>();
             int index = 0;
-            foreach (var it in items)
+            foreach (var row in rows)
             {
-                if (token.IsCancellationRequested || it.ListView == null) continue;
-                var row = RowOf(it);
+                if (token.IsCancellationRequested || !list.Items.Contains(row)) continue;
                 row.State = State.Converting;
-                Render(it);
-                it.EnsureVisible();
+                RefreshRow(row);
+                int i = list.Items.IndexOf(row);
+                if (i >= 0) list.TopIndex = Math.Min(list.TopIndex, i);
                 index++;
-                statusLabel.Text = string.Format("กำลังแปลง {0}/{1}: {2}", index, items.Count, Path.GetFileName(row.FilePath));
+                SetStatus(string.Format("กำลังแปลง {0}/{1}: {2}", index, rows.Count, Path.GetFileName(row.FilePath)));
 
                 string path = row.FilePath;
                 var r = await Task.Run(() => Converter.Convert(path, outDir, mode, claimed));
                 row.Outcome = r;
                 if (r.Info != null) row.Info = r.Info;
                 row.State = r.Kind == OutcomeKind.Converted ? State.Done : r.Kind == OutcomeKind.Skipped ? State.Skipped : State.Failed;
-                Render(it);
                 done.Add(row);
-                progress.Value = Math.Min(progress.Maximum, progress.Value + 1);
+                progress.Value = done.Count;
+                RefreshRow(row);
             }
 
             busy = false;
@@ -555,10 +696,21 @@ namespace OfdToPdf
             cts = null;
             bool cancelled = token.IsCancellationRequested;
             UpdateUi(keepStatus: true);
-            Summarize(done, cancelled, items.Count);
+
+            // Show the first result straight away so the user can check it.
+            if (list.SelectedItems.Count == 0)
+            {
+                var first = done.FirstOrDefault(r => r.State == State.Done);
+                if (first != null) list.SetSelected(list.Items.IndexOf(first), true);
+            }
+            Summarize(done, cancelled, rows.Count);
 
             if (closeWhenDone) { Close(); return; }
-            if (snapshotPath != null) SaveSnapshotAndExit();
+            if (snapshotPath != null)
+            {
+                await ShowPreviewAsync();
+                SaveSnapshotAndExit();
+            }
         }
 
         private void Summarize(List<Row> rows, bool cancelled, int requested)
@@ -573,14 +725,14 @@ namespace OfdToPdf
             if (skipped > 0) parts.Add("ข้าม " + skipped);
             if (failed.Count > 0) parts.Add("ล้มเหลว " + failed.Count);
             if (cancelled) parts.Add("หยุดกลางคัน (ยังไม่ได้แปลง " + (requested - rows.Count) + " ไฟล์)");
-            statusLabel.Text = string.Join(" · ", parts);
+            SetStatus(string.Join(" · ", parts));
 
             var outcomes = rows.Where(r => r.Outcome != null).Select(r => r.Outcome).ToList();
             var unresolved = outcomes.SelectMany(o => o.MissingFonts).Distinct().ToList();
             int signed = rows.Count(r => r.State == State.Done && r.Info != null && r.Info.HasSignatures);
             var substituted = outcomes.SelectMany(o => o.SubstitutedFonts).Select(kv => kv.Key + " → " + kv.Value).Distinct().ToList();
 
-            if (chkOpenWhenDone.Checked && converted + partial.Count > 0 && snapshotPath == null)
+            if (miOpenWhenDone.Checked && converted + partial.Count > 0 && snapshotPath == null)
                 Reveal(rows.First(r => r.State == State.Done).Outcome.OutputPath);
 
             bool nothingToSay = failed.Count == 0 && unresolved.Count == 0 && partial.Count == 0 && signed == 0 && !cancelled;
@@ -603,7 +755,7 @@ namespace OfdToPdf
             if (signed > 0)
                 sb.Append("\nℹ " + signed + " ไฟล์มีลายเซ็นดิจิทัล — PDF ที่ได้เป็นสำเนาสำหรับอ่าน ลายเซ็นไม่ได้ถูกตรวจหรือคงไว้ ให้เก็บไฟล์ OFD ต้นฉบับไว้เป็นหลักฐาน\n");
             if (substituted.Count > 0)
-                sb.Append("\nแทนฟอนต์ที่เครื่องไม่มีให้อัตโนมัติ: " + string.Join(", ", substituted) + "\n");
+                sb.Append("\nแทนฟอนต์ที่เครื่องไม่มีให้อัตโนมัติ: " + string.Join(", ", substituted) + " — ดูตัวอย่างทางขวาเพื่อตรวจตัวอักษร\n");
             if (unresolved.Count > 0)
             {
                 sb.Append("\n⚠ ไม่มีฟอนต์และหาฟอนต์แทนไม่ได้: " + string.Join(", ", unresolved) +
@@ -618,123 +770,245 @@ namespace OfdToPdf
                 failed.Count > 0 || partial.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
         }
 
-        // ---- row rendering ---------------------------------------------------------------
+        // ---- row presentation --------------------------------------------------------------
 
-        private void Render(ListViewItem it)
+        private RowView Describe(Row row)
         {
-            var row = RowOf(it);
             var info = row.Info;
             var o = row.Outcome;
+            var v = new RowView { Title = Path.GetFileName(row.FilePath), Tooltip = row.FilePath };
+            var parts = new List<string>();
+            if (info == null) parts.Add("กำลังตรวจไฟล์…");
+            else if (info.IsValid) parts.Add(info.PageCount + " หน้า");
 
-            it.Text = Path.GetFileName(row.FilePath);
-            var pages = it.SubItems[1];
-            var status = it.SubItems[2];
-            var detail = it.SubItems[3];
-
-            pages.Text = info == null ? "…" : !info.IsValid ? "–" : info.PageCount + (info.OverPageLimit ? " ⚠" : "");
-            pages.ForeColor = info != null && info.OverPageLimit ? Amber : SystemColors.WindowText;
-
-            string tip = row.FilePath;
             switch (row.State)
             {
                 case State.Waiting:
-                    status.Text = "○ รอแปลง";
-                    status.ForeColor = SystemColors.GrayText;
-                    if (info != null && !info.IsValid) { detail.Text = "⚠ " + info.Error; detail.ForeColor = Red; }
+                    if (info != null && !info.IsValid)
+                    {
+                        Badge(v, Theme.GlyphCancel, "✕", Theme.Error, "ไฟล์เสีย", Theme.Error);
+                        parts.Add(info.Error);
+                        v.SubtitleColor = Theme.Error;
+                    }
+                    else if (info != null && info.OverPageLimit)
+                    {
+                        Badge(v, Theme.GlyphWarning, "!", Theme.WarningFill, "รอแปลง", Theme.TextSecondary);
+                        parts.Add("รุ่นฟรีแปลงได้แค่ " + OfdInfo.FreePageLimit + " หน้าแรก");
+                        v.SubtitleColor = Theme.Warning;
+                    }
                     else
                     {
-                        var hints = new List<string>();
-                        if (info != null && info.OverPageLimit) hints.Add("⚠ เกิน " + OfdInfo.FreePageLimit + " หน้า: รุ่นฟรีแปลงได้แค่ " + OfdInfo.FreePageLimit + " หน้าแรก");
-                        if (info != null && info.HasSignatures) hints.Add("มีลายเซ็นดิจิทัล");
-                        detail.Text = string.Join(" · ", hints);
-                        detail.ForeColor = info != null && info.OverPageLimit ? Amber : SystemColors.GrayText;
+                        v.Hollow = true;
+                        v.Fill = Theme.Neutral;
+                        v.Status = "รอแปลง";
                     }
+                    if (info != null && info.HasSignatures) parts.Add("มีลายเซ็นดิจิทัล");
                     break;
                 case State.Converting:
-                    status.Text = "◔ กำลังแปลง…";
-                    status.ForeColor = Blue;
-                    detail.Text = "";
+                    Badge(v, Theme.GlyphSync, "…", Theme.Accent, "กำลังแปลง…", Theme.Accent);
                     break;
                 case State.Done:
-                    status.Text = o.Truncated ? "⚠ ไม่ครบ" : "✓ สำเร็จ";
-                    status.ForeColor = o.Truncated ? Amber : Green;
-                    var bits = new List<string> { "→ " + Path.GetFileName(o.OutputPath) };
-                    if (o.Truncated) bits.Add(string.Format("⚠ ได้ {0} จาก {1} หน้า", o.PdfPages, info.PageCount));
-                    if (o.SubstitutedFonts.Count > 0)
-                        bits.Add("แทนฟอนต์ " + string.Join(", ", o.SubstitutedFonts.Select(kv => kv.Key + "→" + kv.Value)));
-                    if (o.MissingFonts.Count > 0) bits.Add("⚠ ไม่มีฟอนต์ " + string.Join(", ", o.MissingFonts));
-                    if (info != null && info.HasSignatures) bits.Add("ลายเซ็นไม่ถูกคงไว้ใน PDF");
-                    detail.Text = string.Join(" · ", bits);
-                    detail.ForeColor = o.MissingFonts.Count > 0 || o.Truncated ? Amber : SystemColors.WindowText;
-                    tip += "\n→ " + o.OutputPath + (o.Warnings.Count > 0 ? "\n" + string.Join("\n", o.Warnings) : "") + "\n(ดับเบิลคลิกเพื่อเปิด)";
+                    bool warn = o.Truncated || o.MissingFonts.Count > 0;
+                    Badge(v, warn ? Theme.GlyphWarning : Theme.GlyphCheck, warn ? "!" : "✓", warn ? Theme.WarningFill : Theme.Success,
+                        o.Truncated ? "ไม่ครบ" : "สำเร็จ", warn ? Theme.Warning : Theme.Success);
+                    parts.Add("→ " + Path.GetFileName(o.OutputPath));
+                    if (o.Truncated && info != null) parts.Add(string.Format("ได้ {0} จาก {1} หน้า", o.PdfPages, info.PageCount));
+                    if (o.MissingFonts.Count > 0) parts.Add("ไม่มีฟอนต์ " + string.Join(", ", o.MissingFonts));
+                    if (o.SubstitutedFonts.Count > 0) parts.Add("แทนฟอนต์ " + string.Join(", ", o.SubstitutedFonts.Select(kv => kv.Key + "→" + kv.Value)));
+                    if (warn) v.SubtitleColor = Theme.Warning;
+                    v.Tooltip += "\n→ " + o.OutputPath + (o.Warnings.Count > 0 ? "\n" + string.Join("\n", o.Warnings) : "") + "\nดับเบิลคลิกเพื่อเปิด PDF";
                     break;
                 case State.Skipped:
-                    status.Text = "↷ ข้าม";
-                    status.ForeColor = SystemColors.GrayText;
-                    detail.Text = "มี PDF อยู่แล้ว: " + Path.GetFileName(o.OutputPath);
-                    detail.ForeColor = SystemColors.GrayText;
+                    Badge(v, Theme.GlyphSkip, "–", Theme.Neutral, "ข้าม", Theme.TextSecondary);
+                    parts.Add("มี PDF อยู่แล้ว: " + Path.GetFileName(o.OutputPath));
                     break;
                 case State.Failed:
-                    status.Text = "✗ ล้มเหลว";
-                    status.ForeColor = Red;
-                    detail.Text = o == null ? "" : o.Error;
-                    detail.ForeColor = Red;
-                    tip += "\n" + detail.Text;
+                    Badge(v, Theme.GlyphCancel, "✕", Theme.Error, "ล้มเหลว", Theme.Error);
+                    if (o != null) parts.Add(o.Error);
+                    v.SubtitleColor = Theme.Error;
+                    if (o != null) v.Tooltip += "\n" + o.Error;
                     break;
             }
-            it.ToolTipText = tip;
+            v.Subtitle = string.Join("  ·  ", parts.Where(p => !string.IsNullOrEmpty(p)));
+            return v;
+        }
+
+        private static void Badge(RowView v, string glyph, string fallback, Color fill, string status, Color statusColor)
+        {
+            v.Glyph = Theme.Glyph(glyph, fallback);
+            v.Fill = fill;
+            v.Status = status;
+            v.StatusColor = statusColor;
         }
 
         private void UpdateUi(bool keepStatus = false)
         {
             bool any = list.Items.Count > 0;
-            // Show one or the other; overlapping docked controls draw unreliably.
-            emptyState.Visible = !any;
-            list.Visible = any;
-            txtOut.Enabled = btnBrowse.Enabled = rbFolder.Checked && !busy;
-            btnAdd.Enabled = btnAddFolder.Enabled = !busy;
+            drop.Compact = any;
+            drop.Dock = any ? DockStyle.Top : DockStyle.Fill;
+            drop.Height = Px(68);
+            dropGap.Visible = listCard.Visible = any;
+            drop.BtnFiles.Enabled = drop.BtnFolder.Enabled = !busy;
+
+            var rows = AllRows();
+            int pending = rows.Count(r => r.State != State.Done && r.State != State.Skipped);
+            int okCount = rows.Count(r => r.State == State.Done);
+            int failCount = rows.Count(r => r.State == State.Failed);
+            var title = new StringBuilder("ไฟล์ (" + rows.Count + ")");
+            if (okCount > 0) title.Append("  ·  แปลงแล้ว " + okCount);
+            if (failCount > 0) title.Append("  ·  ล้มเหลว " + failCount);
+            lblListTitle.Text = title.ToString();
+
             btnRemove.Enabled = !busy && list.SelectedItems.Count > 0;
             btnClear.Enabled = !busy && any;
-            rbSame.Enabled = rbFolder.Enabled = cmbConflict.Enabled = chkOpenWhenDone.Enabled = !busy;
-            btnConvert.Text = busy ? "■  หยุด" : "▶  แปลงเป็น PDF";
-            btnConvert.BackColor = busy ? Red : Blue;
-            btnConvert.FlatAppearance.MouseOverBackColor = busy ? Color.FromArgb(164, 38, 24) : BlueHover;
-            btnConvert.Enabled = busy || any;
-            if (!btnConvert.Enabled) btnConvert.BackColor = SystemColors.ControlDark;
-            miConvertMenu.Text = busy ? "หยุด" : "แปลงเป็น PDF";
+            cmbDest.Enabled = cmbConflict.Enabled = !busy;
+
+            if (busy)
+            {
+                btnConvert.Kind = ButtonKind.Danger;
+                btnConvert.IconGlyph = Theme.GlyphStop;
+                btnConvert.Text = "หยุด";
+            }
+            else
+            {
+                btnConvert.Kind = ButtonKind.Accent;
+                btnConvert.IconGlyph = Theme.GlyphPlay;
+                btnConvert.Text = pending > 0 ? "แปลง " + pending + " ไฟล์" : "แปลงเป็น PDF";
+                btnConvert.Enabled = pending > 0;
+            }
+            btnConvert.Invalidate();
+
             if (!keepStatus && !busy)
-                statusLabel.Text = any
-                    ? list.Items.Count + " ไฟล์ในรายการ — กด \"แปลงเป็น PDF\" (F5)"
-                    : "พร้อม — เพิ่มไฟล์ .ofd เพื่อเริ่ม";
+                SetStatus(any ? rows.Count + " ไฟล์ในรายการ — ดับเบิลคลิกไฟล์ที่แปลงแล้วเพื่อเปิด, คลิกขวาเพื่อดูตัวเลือก"
+                              : "พร้อมใช้งาน — เพิ่มไฟล์ .ofd เพื่อเริ่ม (Ctrl+O)");
+        }
+
+        private void SetStatus(string text)
+        {
+            statusLabel.Text = text;
+        }
+
+        // ---- preview ----------------------------------------------------------------------
+
+        private void ShowPreview()
+        {
+            var task = ShowPreviewAsync();
+        }
+
+        private void ShowPreviewPlaceholder()
+        {
+            SetPreviewImage(null);
+            lblPreviewEmpty.Text = "เลือกไฟล์ที่แปลงแล้ว\nเพื่อดูตัวอย่างหน้า PDF ที่นี่";
+            lblPreviewName.Text = "";
+            lblPreviewNote.Text = "";
+            lblPage.Text = "";
+            btnPrev.Enabled = btnNext.Enabled = btnOpenPdf.Enabled = false;
+        }
+
+        private async Task ShowPreviewAsync()
+        {
+            var sel = SelectedRows();
+            var row = sel.Count == 1 ? sel[0] : null;
+            if (row != previewRow) { previewRow = row; previewPage = 0; }
+            int request = ++previewRequest;
+
+            if (row == null)
+            {
+                ShowPreviewPlaceholder();
+                if (sel.Count > 1) lblPreviewEmpty.Text = "เลือกไว้ " + sel.Count + " ไฟล์\nเลือกไฟล์เดียวเพื่อดูตัวอย่าง";
+                return;
+            }
+
+            lblPreviewName.Text = Path.GetFileName(row.FilePath) + (HasPdf(row) ? "  →  " + Path.GetFileName(row.Outcome.OutputPath) : "");
+            lblPreviewNote.Text = PreviewNote(row);
+            if (!HasPdf(row))
+            {
+                SetPreviewImage(null);
+                lblPage.Text = "";
+                btnPrev.Enabled = btnNext.Enabled = btnOpenPdf.Enabled = false;
+                lblPreviewEmpty.Text =
+                    row.State == State.Failed ? "แปลงไม่สำเร็จ\n\n" + (row.Outcome == null ? "" : row.Outcome.Error) :
+                    row.State == State.Converting ? "กำลังแปลง…" :
+                    row.State == State.Skipped ? "ข้ามไฟล์นี้ เพราะมี PDF อยู่แล้ว" :
+                    row.State == State.Done ? "ไม่พบไฟล์ PDF (อาจถูกย้ายหรือลบ)" :
+                    row.Info != null && !row.Info.IsValid ? "ไฟล์นี้เปิดไม่ได้\n\n" + row.Info.Error :
+                    "ยังไม่ได้แปลง\nกด \"แปลง\" แล้วตัวอย่างจะแสดงที่นี่";
+                return;
+            }
+
+            if (picture.Image == null) lblPreviewEmpty.Text = "กำลังโหลดตัวอย่าง…";
+            string pdf = row.Outcome.OutputPath;
+            int page = previewPage;
+            int dpi = (int)(96 * k);
+            int count = 0;
+            var image = await Task.Run(() =>
+            {
+                int c;
+                var img = Converter.RenderPdfPage(pdf, page, dpi, out c);
+                count = c;
+                return img;
+            });
+            if (request != previewRequest || IsDisposed)
+            {
+                if (image != null) image.Dispose();
+                return;
+            }
+            previewPages = count;
+            SetPreviewImage(image);
+            if (image == null) lblPreviewEmpty.Text = "แสดงตัวอย่างไม่ได้ — กด \"เปิด PDF\" เพื่อดูในโปรแกรมอ่าน PDF";
+            lblPage.Text = count > 0 ? string.Format("หน้า {0} / {1}", page + 1, count) : "";
+            btnPrev.Enabled = page > 0;
+            btnNext.Enabled = page < count - 1;
+            btnOpenPdf.Enabled = true;
+        }
+
+        private static string PreviewNote(Row row)
+        {
+            var o = row.Outcome;
+            if (row.State != State.Done || o == null) return "";
+            if (o.Truncated && row.Info != null)
+                return string.Format("⚠ ได้ {0} จาก {1} หน้า — รุ่นฟรีแปลงได้เฉพาะ {2} หน้าแรก", o.PdfPages, row.Info.PageCount, OfdInfo.FreePageLimit);
+            if (o.MissingFonts.Count > 0) return "⚠ ไม่มีฟอนต์ " + string.Join(", ", o.MissingFonts) + " — ตัวอักษรอาจเพี้ยน";
+            if (o.SubstitutedFonts.Count > 0) return "แทนฟอนต์ " + string.Join(", ", o.SubstitutedFonts.Select(kv => kv.Key + "→" + kv.Value)) + " — ตรวจตัวอักษรได้จากภาพนี้";
+            return "";
+        }
+
+        private void SetPreviewImage(Image image)
+        {
+            var old = picture.Image;
+            picture.Image = image;
+            if (old != null) old.Dispose();
+            picture.Visible = image != null;
+            lblPreviewEmpty.Visible = image == null;
         }
 
         // ---- actions ---------------------------------------------------------------------
 
         private void OpenSelectedPdf()
         {
-            var sel = SelectedItems();
-            if (sel.Count != 1) return;
-            var row = RowOf(sel[0]);
-            if (HasPdf(row)) Shell(row.Outcome.OutputPath);
+            var sel = SelectedRows();
+            if (sel.Count == 1 && HasPdf(sel[0])) Shell(sel[0].Outcome.OutputPath);
         }
 
         private void RevealSelected()
         {
-            var sel = SelectedItems();
+            var sel = SelectedRows();
             if (sel.Count != 1) return;
-            var row = RowOf(sel[0]);
-            Reveal(HasPdf(row) ? row.Outcome.OutputPath : row.FilePath);
+            Reveal(HasPdf(sel[0]) ? sel[0].Outcome.OutputPath : sel[0].FilePath);
         }
 
         private void CopySelectedDetails()
         {
-            var lines = SelectedItems().Select(it =>
-                it.Text + "\t" + it.SubItems[2].Text + "\t" + it.SubItems[3].Text + "\t" + RowOf(it).FilePath).ToList();
+            var lines = SelectedRows().Select(r =>
+            {
+                var v = Describe(r);
+                return v.Title + "\t" + v.Status + "\t" + v.Subtitle + "\t" + r.FilePath;
+            }).ToList();
             if (lines.Count == 0) return;
             try
             {
                 Clipboard.SetText(string.Join(Environment.NewLine, lines));
-                statusLabel.Text = "คัดลอกรายละเอียด " + lines.Count + " รายการแล้ว";
+                SetStatus("คัดลอกรายละเอียด " + lines.Count + " รายการแล้ว");
             }
             catch (ExternalException) { /* clipboard busy */ }
         }
@@ -828,14 +1102,28 @@ namespace OfdToPdf
         private void ShowHelp()
         {
             Notify(
-                "1. เพิ่มไฟล์ .ofd: ลากมาวาง, กด \"เพิ่มไฟล์\" (Ctrl+O) หรือ \"เพิ่มโฟลเดอร์\" (Ctrl+Shift+O)\n" +
-                "2. เลือกที่เก็บ PDF และวิธีจัดการไฟล์ชื่อซ้ำที่ด้านล่าง\n" +
-                "3. กด \"แปลงเป็น PDF\" (F5)\n" +
-                "4. ดับเบิลคลิกแถวที่สำเร็จเพื่อเปิด PDF, คลิกขวาเพื่อดูตัวเลือกเพิ่ม\n\n" +
-                "ทางลัด: เครื่องมือ → เพิ่มในเมนู \"ส่งไปยัง\" แล้วคลิกขวาที่ไฟล์ .ofd ใน Explorer ได้เลย\n\n" +
-                "ตัวอักษรเพี้ยน: โปรแกรมแทนฟอนต์จีนที่เครื่องไม่มีให้อัตโนมัติ ถ้าต้องการหน้าตาตรงต้นฉบับ " +
-                "ให้ติดตั้ง \"Chinese (Simplified) Supplemental Fonts\" หรือคัดลอกไฟล์ฟอนต์ไปไว้ใน เครื่องมือ → เปิดโฟลเดอร์ฟอนต์เพิ่มเติม\n\n" +
-                "ข้อจำกัด: แปลงได้ไม่เกิน " + OfdInfo.FreePageLimit + " หน้าต่อไฟล์ (Free Spire.PDF)",
+                "1. เพิ่มไฟล์ .ofd: ลากมาวาง หรือกด \"เลือกไฟล์\" / \"เลือกโฟลเดอร์\"\n" +
+                "2. เลือกที่บันทึก PDF และวิธีจัดการไฟล์ชื่อซ้ำที่แถบด้านล่าง\n" +
+                "3. กด \"แปลง\" (F5)\n" +
+                "4. คลิกไฟล์ที่แปลงแล้วเพื่อดูตัวอย่างทางขวา, ดับเบิลคลิกเพื่อเปิด PDF, คลิกขวาหรือ ⋯ เพื่อดูตัวเลือกเพิ่ม\n\n" +
+                "ทางลัด: ⚙ → เพิ่มในเมนู \"ส่งไปยัง\" แล้วคลิกขวาที่ไฟล์ .ofd ใน Explorer ได้เลย\n\n" +
+                "ตัวอักษรเพี้ยน: โปรแกรมแทนฟอนต์จีนที่เครื่องไม่มีให้อัตโนมัติ ตรวจได้จากภาพตัวอย่าง ถ้าต้องการหน้าตาตรงต้นฉบับ " +
+                "ให้ติดตั้ง \"Chinese (Simplified) Supplemental Fonts\" หรือคัดลอกไฟล์ฟอนต์ไปไว้ใน ⚙ → เปิดโฟลเดอร์ฟอนต์เพิ่มเติม\n\n" +
+                "ข้อจำกัด: รุ่นฟรีแปลงไฟล์ OFD ได้เฉพาะ " + OfdInfo.FreePageLimit + " หน้าแรก (โปรแกรมจะแจ้งเมื่อได้ไม่ครบ)",
+                MessageBoxIcon.Information);
+        }
+
+        private void ShowShortcuts()
+        {
+            Notify(
+                "Ctrl+O\tเพิ่มไฟล์\n" +
+                "Ctrl+Shift+O\tเพิ่มโฟลเดอร์\n" +
+                "F5\tแปลง / หยุด\n" +
+                "Enter\tเปิด PDF ของไฟล์ที่เลือก\n" +
+                "Delete\tลบไฟล์ที่เลือกออกจากรายการ\n" +
+                "Ctrl+A\tเลือกทั้งหมด\n" +
+                "Ctrl+C\tคัดลอกรายละเอียด\n" +
+                "F1\tวิธีใช้",
                 MessageBoxIcon.Information);
         }
 
@@ -843,7 +1131,7 @@ namespace OfdToPdf
         {
             Notify(
                 "OFD → PDF Converter " + VersionText() + "\n\n" +
-                "เครื่องมือแปลง: Free Spire.PDF (สูงสุด " + OfdInfo.FreePageLimit + " หน้าต่อไฟล์)\n\n" +
+                "เครื่องมือแปลง: Free Spire.PDF (แปลงไฟล์ OFD ได้ " + OfdInfo.FreePageLimit + " หน้าแรก)\n\n" +
                 "การตั้งค่า ฟอนต์เพิ่มเติม และบันทึกการทำงาน เก็บไว้ในเครื่องที่:\n" + AppPaths.DataDir,
                 MessageBoxIcon.Information);
         }
@@ -858,7 +1146,6 @@ namespace OfdToPdf
 
         private void OnShown(object sender, EventArgs e)
         {
-            FitLastColumn();
             if (autoStart && list.Items.Count > 0) OnConvertClicked();
             else if (snapshotPath != null) SaveSnapshotAndExit();
         }
@@ -876,10 +1163,11 @@ namespace OfdToPdf
                 closeWhenDone = true;
                 cts.Cancel();
                 e.Cancel = true;
-                statusLabel.Text = "กำลังหยุด… โปรแกรมจะปิดเมื่อไฟล์ปัจจุบันเสร็จ";
+                SetStatus("กำลังหยุด… โปรแกรมจะปิดเมื่อไฟล์ปัจจุบันเสร็จ");
                 return;
             }
             SaveSettings();
+            SetPreviewImage(null);
         }
 
         /// <summary>CI only: render the window to a PNG so the layout can be checked without a screen.</summary>
@@ -887,7 +1175,6 @@ namespace OfdToPdf
         {
             try
             {
-                FitLastColumn();
                 Refresh();
                 using (var bmp = new Bitmap(Width, Height))
                 {
