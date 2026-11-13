@@ -160,7 +160,7 @@ namespace OfdToPdf
 
             var titles = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Left, Margin = Padding.Empty };
             titles.Controls.Add(new Label { Text = "OFD → PDF Converter", Font = Theme.Title, AutoSize = true, Margin = Padding.Empty });
-            titles.Controls.Add(new Label { Text = "แปลงไฟล์ OFD เป็น PDF · เวอร์ชัน " + VersionText(), Font = Theme.Caption, ForeColor = Theme.TextSecondary, AutoSize = true, Margin = Padding.Empty });
+            titles.Controls.Add(new Label { Text = "แปลงไฟล์ OFD เป็น PDF · เวอร์ชัน " + VersionText() + " · Created by EARTH", Font = Theme.Caption, ForeColor = Theme.TextSecondary, AutoSize = true, Margin = Padding.Empty });
 
             var tips = new ToolTip();
             tips.SetToolTip(btnSettings, "ตั้งค่าและเครื่องมือ");
@@ -1137,7 +1137,8 @@ namespace OfdToPdf
         private void ShowAbout()
         {
             Notify(
-                "OFD → PDF Converter " + VersionText() + "\n\n" +
+                "OFD → PDF Converter " + VersionText() + "\n" +
+                "Created by EARTH\n\n" +
                 "เครื่องมือแปลง: Free Spire.PDF (แปลงไฟล์ OFD ได้ " + OfdInfo.FreePageLimit + " หน้าแรก)\n\n" +
                 "การตั้งค่า ฟอนต์เพิ่มเติม และบันทึกการทำงาน เก็บไว้ในเครื่องที่:\n" + AppPaths.DataDir,
                 MessageBoxIcon.Information);

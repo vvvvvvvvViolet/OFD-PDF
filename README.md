@@ -50,3 +50,6 @@ dotnet build src/OfdToPdf/OfdToPdf.csproj -c Release -o out
 
 GitHub Actions build และทดสอบทุก push (ฟอนต์ไม่เป็นกล่อง, ไม่มี watermark, การจัดการไฟล์ชื่อซ้ำ, ไฟล์เสีย, ขีดจำกัดหน้า, ภาพหน้าจอ UI)
 ออก Release: แท็บ Actions → *Build EXE* → *Run workflow* → ใส่ `release_tag` เช่น `v1.1`
+
+---
+Created by EARTH
